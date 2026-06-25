@@ -1,7 +1,12 @@
 package jira
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/ankitpokhrel/jira-cli/pkg/jira"
@@ -11,37 +16,98 @@ import (
 type Client struct {
 	client       *jira.Client
 	installation string // "Cloud" or "Local"
+	sprintField  string // Custom field ID for sprint (e.g., "customfield_10020")
+}
+
+// EnrichedIssue wraps jira.Issue with additional parsed data
+type EnrichedIssue struct {
+	*jira.Issue
+	SprintName  string
+	SprintState string
 }
 
 // NewClient creates a new Jira client
-func NewClient(cfg *jira.Config, installation string) (*Client, error) {
+func NewClient(cfg *jira.Config, installation, sprintField string) (*Client, error) {
 	client := jira.NewClient(*cfg, jira.WithTimeout(15*time.Second))
 	return &Client{
 		client:       client,
 		installation: installation,
+		sprintField:  sprintField,
 	}, nil
 }
 
-// SearchIssues searches for issues using JQL and returns the results
-func (c *Client) SearchIssues(jql string, limit uint) ([]*jira.Issue, error) {
-	var result *jira.SearchResult
+// SearchIssues searches for issues using JQL and returns enriched results with sprint data
+func (c *Client) SearchIssues(jql string, limit uint) ([]*EnrichedIssue, error) {
+	// Build search URL (same as jira-cli's Search() method)
+	var path string
+	var res *http.Response
 	var err error
 
-	// Dispatch to Cloud (v3) or Local (v2) API based on installation type
 	if c.installation == "Cloud" {
-		result, err = c.client.Search(jql, limit)
+		// v3 API
+		path = fmt.Sprintf("/search/jql?jql=%s&maxResults=%d&fields=*all", url.QueryEscape(jql), limit)
+		res, err = c.client.Get(context.Background(), path, nil)
 	} else {
-		// Local uses v2 API with startAt parameter
-		result, err = c.client.SearchV2(jql, 0, limit)
+		// v2 API
+		path = fmt.Sprintf("/search?jql=%s&startAt=%d&maxResults=%d", url.QueryEscape(jql), 0, limit)
+		res, err = c.client.GetV2(context.Background(), path, nil)
 	}
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to search issues: %w", err)
 	}
+	if res == nil {
+		return []*EnrichedIssue{}, nil
+	}
+	defer res.Body.Close()
 
-	if result == nil {
-		return []*jira.Issue{}, nil
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", res.StatusCode)
 	}
 
-	return result.Issues, nil
+	// Read full response body for two-pass decode
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Pass 1: Decode into standard jira.SearchResult for standard fields
+	var standardResult jira.SearchResult
+	if err := json.Unmarshal(body, &standardResult); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal standard fields: %w", err)
+	}
+
+	// Pass 2: Extract sprint data from custom field
+	var rawResult struct {
+		Issues []struct {
+			Key    string                            `json:"key"`
+			Fields map[string]json.RawMessage `json:"fields"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &rawResult); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal raw fields: %w", err)
+	}
+
+	// Build enriched results
+	enriched := make([]*EnrichedIssue, len(standardResult.Issues))
+	for i, issue := range standardResult.Issues {
+		enrichedIssue := &EnrichedIssue{Issue: issue}
+
+		// Extract sprint data from custom field if present
+		if i < len(rawResult.Issues) && c.sprintField != "" {
+			if sprintRaw, ok := rawResult.Issues[i].Fields[c.sprintField]; ok {
+				var sprints []jira.Sprint
+				if err := json.Unmarshal(sprintRaw, &sprints); err == nil && len(sprints) > 0 {
+					// Use the last sprint (most recent/active)
+					lastSprint := sprints[len(sprints)-1]
+					enrichedIssue.SprintName = lastSprint.Name
+					enrichedIssue.SprintState = lastSprint.Status
+				}
+			}
+		}
+
+		enriched[i] = enrichedIssue
+	}
+
+	return enriched, nil
 }

@@ -117,7 +117,7 @@ Default sections provided out-of-box, but users customize in config.
 ### 2. Column Layout (Medium Priority)
 Users configure which fields display in the Issue table.
 
-**Default columns:** `[key, type, summary, status, assignee, component, updated]`
+**Default columns:** `[key, type, summary, status, assignee, component, sprint, updated]`
 
 **Supported fields:**
 - `key` — Issue key (e.g., ACM-12345)
@@ -126,6 +126,7 @@ Users configure which fields display in the Issue table.
 - `status` — Current status
 - `assignee` — Assigned user
 - `component` — First component (if multiple)
+- `sprint` — Sprint name (if issue is in a sprint, shows most recent)
 - `updated` — Last updated date (YYYY-MM-DD)
 - `created` — Created date (YYYY-MM-DD)
 - `priority` — Priority level
@@ -135,7 +136,12 @@ Users configure which fields display in the Issue table.
 - `fixversion` — First fix version (if multiple)
 - `parent` — Parent issue key (for subtasks)
 
-**Note on custom fields:** Jira custom fields (including Sprint) are NOT currently supported. The jira-cli library returns custom field data in API responses, but does not parse them into the Issue struct. Supporting custom fields requires using the raw API and custom JSON parsing.
+**Sprint field configuration:** Sprint data is extracted from a Jira custom field (defaults to `customfield_10020`, the most common value). If your Jira instance uses a different custom field ID for sprints, set `sprint_field: customfield_XXXXX` in `~/.config/jdash/config.yaml`. To find your sprint field ID, run:
+```bash
+curl -u "email:api-token" "https://your-jira/rest/api/3/field" | grep -i sprint
+```
+
+**Other custom fields:** Custom fields beyond sprint are not currently supported. The jira-cli library doesn't expose a generic mechanism for custom field access. Sprint support is implemented via raw API parsing.
 
 ### 3. Keybindings (Low Priority)
 Start with sensible defaults similar to gh-dash (vim-style navigation). Customization deferred to future versions.
@@ -166,8 +172,6 @@ sections:
 
 Where `user@example.com` is automatically substituted with your login email from jira-cli config.
 
-**Note:** JQL queries can filter by `sprint` (e.g., `sprint in openSprints()`), but the `sprint` field cannot be displayed in columns due to custom field limitations (see Column Layout section above).
-
 **Example custom config** (`~/.config/jdash/config.yaml`):
 ```yaml
 sections:
@@ -183,7 +187,7 @@ sections:
 
 **Default layout:**
 ```yaml
-layout: [key, type, summary, status, assignee, component, updated]
+layout: [key, type, summary, status, assignee, component, sprint, updated]
 ```
 
 **Empty states:** When a section has no issues, display a placeholder message similar to gh-dash (e.g., "No issues found").

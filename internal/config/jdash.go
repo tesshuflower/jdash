@@ -11,8 +11,9 @@ import (
 
 // JdashConfig represents jdash's configuration
 type JdashConfig struct {
-	Sections []SectionConfig `yaml:"sections"`
-	Layout   []string        `yaml:"layout,omitempty"`
+	Sections    []SectionConfig `yaml:"sections"`
+	Layout      []string        `yaml:"layout,omitempty"`
+	SprintField string          `yaml:"sprint_field,omitempty"`
 }
 
 // SectionConfig represents a single section configuration
@@ -94,14 +95,15 @@ func getDefaultConfig(login string) JdashConfig {
 	}
 
 	return JdashConfig{
-		Sections: sections,
-		Layout:   getDefaultLayout(),
+		Sections:    sections,
+		Layout:      getDefaultLayout(),
+		SprintField: "customfield_10020", // Common default, but may vary by Jira instance
 	}
 }
 
 // getDefaultLayout returns the default column layout
 func getDefaultLayout() []string {
-	return []string{"key", "type", "summary", "status", "assignee", "component", "updated"}
+	return []string{"key", "type", "summary", "status", "assignee", "component", "sprint", "updated"}
 }
 
 // SaveExampleConfig writes an example config file to ~/.config/jdash/config.yaml.example
@@ -120,8 +122,8 @@ sections:
     # Optional: per-section layout override
     layout: [key, summary, status, assignee, sprint]
 
-  - title: No Sprint Assigned
-    filters: assignee = currentUser() AND sprint is EMPTY AND resolution = Unresolved
+  - title: No Sprint / Future Sprint
+    filters: assignee = currentUser() AND (sprint is EMPTY OR sprint in futureSprints()) AND resolution = Unresolved
 
   # Example: Bugs with priority-focused columns
   - title: Open Bugs
@@ -133,8 +135,13 @@ sections:
   #   filters: sprint in openSprints() AND component = "ACM"
 
 # Global column layout (used when section doesn't specify its own)
-# Available fields: key, type, summary, status, assignee, component, sprint, updated, priority, reporter
-layout: [key, type, summary, status, assignee, component, updated]
+# Available fields: key, type, summary, status, assignee, component, sprint, updated, created, priority, reporter, labels, resolution, fixversion, parent
+layout: [key, type, summary, status, assignee, component, sprint, updated]
+
+# Sprint custom field ID (defaults to customfield_10020 if not specified)
+# This is the most common value, but may vary by Jira instance.
+# To find your sprint field ID, run: curl -u "user:token" "https://your-jira/rest/api/3/field" | grep -i sprint
+sprint_field: customfield_10020
 `
 
 	// Ensure directory exists

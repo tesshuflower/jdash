@@ -19,7 +19,7 @@ func main() {
 	}
 
 	// Create Jira client
-	client, err := jira.NewClient(appCfg.JiraCfg, appCfg.Installation)
+	client, err := jira.NewClient(appCfg.JiraCfg, appCfg.Installation, appCfg.Jdash.SprintField)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating Jira client: %v\n", err)
 		os.Exit(1)

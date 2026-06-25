@@ -8,7 +8,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ankitpokhrel/jira-cli/pkg/browser"
-	"github.com/ankitpokhrel/jira-cli/pkg/jira"
 	"github.com/tesshuflower/jdash/internal/config"
 	jiraClient "github.com/tesshuflower/jdash/internal/jira"
 )
@@ -55,7 +54,7 @@ type Model struct {
 type sectionModel struct {
 	config  config.SectionConfig
 	table   table.Model
-	issues  []*jira.Issue
+	issues  []*jiraClient.EnrichedIssue
 	loading bool
 	err     error
 	layout  []string // Column layout for this section
@@ -63,7 +62,7 @@ type sectionModel struct {
 
 type sectionIssuesLoadedMsg struct {
 	sectionIdx int
-	issues     []*jira.Issue
+	issues     []*jiraClient.EnrichedIssue
 	err        error
 }
 
@@ -131,6 +130,7 @@ func buildColumnsFromLayout(layout []string) []table.Column {
 		"status":     15,
 		"assignee":   20,
 		"component":  15,
+		"sprint":     20,
 		"updated":    12,
 		"created":    12,
 		"priority":   10,
@@ -149,6 +149,7 @@ func buildColumnsFromLayout(layout []string) []table.Column {
 		"status":     "Status",
 		"assignee":   "Assignee",
 		"component":  "Component",
+		"sprint":     "Sprint",
 		"updated":    "Updated",
 		"created":    "Created",
 		"priority":   "Priority",
@@ -432,7 +433,7 @@ func (m Model) renderDetailPane(section sectionModel) string {
 	return detailStyle.Width(m.width - 4).Render(details.String())
 }
 
-func issuesToRows(issues []*jira.Issue, layout []string) []table.Row {
+func issuesToRows(issues []*jiraClient.EnrichedIssue, layout []string) []table.Row {
 	rows := make([]table.Row, len(issues))
 	for i, issue := range issues {
 		row := make(table.Row, len(layout))
@@ -445,7 +446,7 @@ func issuesToRows(issues []*jira.Issue, layout []string) []table.Row {
 }
 
 // getIssueFieldValue extracts the value for a specific field from an issue
-func getIssueFieldValue(issue *jira.Issue, field string) string {
+func getIssueFieldValue(issue *jiraClient.EnrichedIssue, field string) string {
 	switch field {
 	case "key":
 		return issue.Key
@@ -474,6 +475,9 @@ func getIssueFieldValue(issue *jira.Issue, field string) string {
 			return issue.Fields.Components[0].Name
 		}
 		return ""
+
+	case "sprint":
+		return issue.SprintName
 
 	case "updated":
 		updated := issue.Fields.Updated
