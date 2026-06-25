@@ -24,6 +24,7 @@ type EnrichedIssue struct {
 	*jira.Issue
 	SprintName  string
 	SprintState string
+	BoardID     int // Board ID from the issue's sprint (0 if no sprint)
 }
 
 // NewClient creates a new Jira client
@@ -96,12 +97,19 @@ func (c *Client) SearchIssues(jql string, limit uint) ([]*EnrichedIssue, error) 
 		// Extract sprint data from custom field if present
 		if i < len(rawResult.Issues) && c.sprintField != "" {
 			if sprintRaw, ok := rawResult.Issues[i].Fields[c.sprintField]; ok {
-				var sprints []jira.Sprint
-				if err := json.Unmarshal(sprintRaw, &sprints); err == nil && len(sprints) > 0 {
+				// Parse sprint manually to get boardId (custom field uses "boardId", not "originBoardId")
+				var rawSprints []struct {
+					ID      int    `json:"id"`
+					Name    string `json:"name"`
+					State   string `json:"state"`
+					BoardID int    `json:"boardId"` // Note: custom field uses "boardId", not "originBoardId"
+				}
+				if err := json.Unmarshal(sprintRaw, &rawSprints); err == nil && len(rawSprints) > 0 {
 					// Use the last sprint (most recent/active)
-					lastSprint := sprints[len(sprints)-1]
+					lastSprint := rawSprints[len(rawSprints)-1]
 					enrichedIssue.SprintName = lastSprint.Name
-					enrichedIssue.SprintState = lastSprint.Status
+					enrichedIssue.SprintState = lastSprint.State
+					enrichedIssue.BoardID = lastSprint.BoardID
 				}
 			}
 		}
@@ -154,6 +162,31 @@ func (c *Client) GetBoardSprints(boardID int) ([]*jira.Sprint, error) {
 		return nil, err
 	}
 	return result.Sprints, nil
+}
+
+// GetAllProjectSprints fetches active and future sprints from all boards in a project
+func (c *Client) GetAllProjectSprints(projectKey string) ([]*jira.Sprint, error) {
+	// Get all boards for the project
+	boards, err := c.GetBoards(projectKey)
+	if err != nil {
+		return nil, err
+	}
+
+	var allSprints []*jira.Sprint
+	for _, board := range boards {
+		sprints, err := c.GetBoardSprints(board.ID)
+		if err != nil {
+			// Skip boards that error (might not have sprints)
+			continue
+		}
+		// Inject board ID into each sprint for reference
+		for _, sprint := range sprints {
+			sprint.BoardID = board.ID
+		}
+		allSprints = append(allSprints, sprints...)
+	}
+
+	return allSprints, nil
 }
 
 // MoveIssueToSprint moves an issue to a sprint

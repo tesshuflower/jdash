@@ -315,21 +315,18 @@ func (m Model) transitionIssue(transition *jira.Transition) tea.Cmd {
 	}
 }
 
-func (m Model) fetchSprints(issueKey string) tea.Cmd {
+func (m Model) fetchSprints(issueKey string, boardID int) tea.Cmd {
 	return func() tea.Msg {
-		// Get boards for the project
-		boards, err := m.client.GetBoards(m.projectKey)
-		if err != nil {
-			return sprintsLoadedMsg{err: err}
-		}
-		if len(boards) == 0 {
-			return sprintsLoadedMsg{err: fmt.Errorf("no boards found for project %s", m.projectKey)}
+		var sprints []*jira.Sprint
+		var err error
+
+		// If no board ID (issue has no sprint), fetch sprints from ALL boards
+		if boardID == 0 {
+			sprints, err = m.client.GetAllProjectSprints(m.projectKey)
+		} else {
+			sprints, err = m.client.GetBoardSprints(boardID)
 		}
 
-		// Use the first board (most common case: one scrum board per project)
-		// TODO: Allow user to select board if multiple exist
-		boardID := boards[0].ID
-		sprints, err := m.client.GetBoardSprints(boardID)
 		return sprintsLoadedMsg{
 			sprints:  sprints,
 			issueKey: issueKey,
@@ -527,7 +524,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cursor := activeSection.table.Cursor()
 					if cursor >= 0 && cursor < len(activeSection.issues) {
 						issue := activeSection.issues[cursor]
-						return m, m.fetchSprints(issue.Key)
+						return m, m.fetchSprints(issue.Key, issue.BoardID)
 					}
 				}
 			}
@@ -787,7 +784,12 @@ func (m Model) renderDetailPane(section sectionModel) string {
 	if m.movingSprint {
 		items := make([]string, len(m.sprints))
 		for i, s := range m.sprints {
-			items[i] = fmt.Sprintf("%s (%s)", s.Name, s.Status)
+			// Show board ID if available (helps when showing sprints from multiple boards)
+			if s.BoardID > 0 {
+				items[i] = fmt.Sprintf("%s (%s) [board:%d]", s.Name, s.Status, s.BoardID)
+			} else {
+				items[i] = fmt.Sprintf("%s (%s)", s.Name, s.Status)
+			}
 		}
 		return detailStyle.Width(m.width - 4).Render(
 			renderSelectorList(fmt.Sprintf("Move to Sprint - %s", issue.Key), items, m.sprintCursor),
