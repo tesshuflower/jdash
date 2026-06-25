@@ -88,8 +88,8 @@ func getDefaultConfig(login string) JdashConfig {
 			Filters: fmt.Sprintf(`assignee = "%s" AND sprint in openSprints()`, login),
 		},
 		{
-			Title:   "No Sprint Assigned",
-			Filters: fmt.Sprintf(`assignee = "%s" AND sprint is EMPTY AND resolution = Unresolved`, login),
+			Title:   "No Sprint / Future Sprint",
+			Filters: fmt.Sprintf(`assignee = "%s" AND (sprint is EMPTY OR sprint in futureSprints()) AND resolution = Unresolved`, login),
 		},
 	}
 
@@ -101,7 +101,7 @@ func getDefaultConfig(login string) JdashConfig {
 
 // getDefaultLayout returns the default column layout
 func getDefaultLayout() []string {
-	return []string{"key", "type", "summary", "status", "assignee", "component", "sprint", "updated"}
+	return []string{"key", "type", "summary", "status", "assignee", "component", "updated"}
 }
 
 // SaveExampleConfig writes an example config file to ~/.config/jdash/config.yaml.example

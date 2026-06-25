@@ -125,30 +125,38 @@ func newSectionModel(secCfg config.SectionConfig, layout []string) sectionModel 
 func buildColumnsFromLayout(layout []string) []table.Column {
 	// Column widths - sensible defaults for each field
 	columnWidths := map[string]int{
-		"key":       12,
-		"type":      10,
-		"summary":   50,
-		"status":    15,
-		"assignee":  20,
-		"component": 15,
-		"sprint":    15,
-		"updated":   12,
-		"priority":  10,
-		"reporter":  20,
+		"key":        12,
+		"type":       10,
+		"summary":    50,
+		"status":     15,
+		"assignee":   20,
+		"component":  15,
+		"updated":    12,
+		"created":    12,
+		"priority":   10,
+		"reporter":   20,
+		"labels":     20,
+		"resolution": 15,
+		"fixversion": 15,
+		"parent":     12,
 	}
 
 	// Column titles - how to display each field
 	columnTitles := map[string]string{
-		"key":       "Key",
-		"type":      "Type",
-		"summary":   "Summary",
-		"status":    "Status",
-		"assignee":  "Assignee",
-		"component": "Component",
-		"sprint":    "Sprint",
-		"updated":   "Updated",
-		"priority":  "Priority",
-		"reporter":  "Reporter",
+		"key":        "Key",
+		"type":       "Type",
+		"summary":    "Summary",
+		"status":     "Status",
+		"assignee":   "Assignee",
+		"component":  "Component",
+		"updated":    "Updated",
+		"created":    "Created",
+		"priority":   "Priority",
+		"reporter":   "Reporter",
+		"labels":     "Labels",
+		"resolution": "Resolution",
+		"fixversion": "Fix Version",
+		"parent":     "Parent",
 	}
 
 	columns := make([]table.Column, len(layout))
@@ -467,11 +475,6 @@ func getIssueFieldValue(issue *jira.Issue, field string) string {
 		}
 		return ""
 
-	case "sprint":
-		// Sprint field would need to be added to issue fetching
-		// For now, return empty
-		return ""
-
 	case "updated":
 		updated := issue.Fields.Updated
 		if len(updated) > 10 {
@@ -479,14 +482,43 @@ func getIssueFieldValue(issue *jira.Issue, field string) string {
 		}
 		return updated
 
+	case "created":
+		created := issue.Fields.Created
+		if len(created) > 10 {
+			return created[:10]
+		}
+		return created
+
 	case "priority":
 		return issue.Fields.Priority.Name
 
 	case "reporter":
 		return issue.Fields.Reporter.Name
 
+	case "labels":
+		if len(issue.Fields.Labels) > 0 {
+			// Show first label, or comma-separated if they fit
+			return strings.Join(issue.Fields.Labels, ",")
+		}
+		return ""
+
+	case "resolution":
+		return issue.Fields.Resolution.Name
+
+	case "fixversion":
+		if len(issue.Fields.FixVersions) > 0 {
+			return issue.Fields.FixVersions[0].Name
+		}
+		return ""
+
+	case "parent":
+		if issue.Fields.Parent != nil {
+			return issue.Fields.Parent.Key
+		}
+		return ""
+
 	default:
-		// Unknown field
+		// Unknown field - return empty
 		return ""
 	}
 }

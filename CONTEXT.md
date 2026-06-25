@@ -115,11 +115,27 @@ Users define which Sections appear and what JQL queries power them. This is the 
 Default sections provided out-of-box, but users customize in config.
 
 ### 2. Column Layout (Medium Priority)
-Users configure which fields display in the Issue table. Jira has custom fields per project, so this must be configurable.
+Users configure which fields display in the Issue table.
 
-**Default columns:** `[key, type, summary, status, assignee, component, sprint, updated]`
+**Default columns:** `[key, type, summary, status, assignee, component, updated]`
 
-Users can add/remove/reorder fields including custom fields (e.g., `customField_10001`).
+**Supported fields:**
+- `key` — Issue key (e.g., ACM-12345)
+- `type` — Issue type (Story, Bug, Epic, Task, etc.)
+- `summary` — Issue summary/title
+- `status` — Current status
+- `assignee` — Assigned user
+- `component` — First component (if multiple)
+- `updated` — Last updated date (YYYY-MM-DD)
+- `created` — Created date (YYYY-MM-DD)
+- `priority` — Priority level
+- `reporter` — User who created the issue
+- `labels` — Comma-separated labels
+- `resolution` — Resolution status
+- `fixversion` — First fix version (if multiple)
+- `parent` — Parent issue key (for subtasks)
+
+**Note on custom fields:** Jira custom fields (including Sprint) are NOT currently supported. The jira-cli library returns custom field data in API responses, but does not parse them into the Issue struct. Supporting custom fields requires using the raw API and custom JSON parsing.
 
 ### 3. Keybindings (Low Priority)
 Start with sensible defaults similar to gh-dash (vim-style navigation). Customization deferred to future versions.
@@ -144,11 +160,13 @@ When jdash runs without a config file, it provides these defaults:
 sections:
   - title: In Sprint
     filters: assignee = "user@example.com" AND sprint in openSprints()
-  - title: No Sprint Assigned
-    filters: assignee = "user@example.com" AND sprint is EMPTY AND resolution = Unresolved
+  - title: No Sprint / Future Sprint
+    filters: assignee = "user@example.com" AND (sprint is EMPTY OR sprint in futureSprints()) AND resolution = Unresolved
 ```
 
 Where `user@example.com` is automatically substituted with your login email from jira-cli config.
+
+**Note:** JQL queries can filter by `sprint` (e.g., `sprint in openSprints()`), but the `sprint` field cannot be displayed in columns due to custom field limitations (see Column Layout section above).
 
 **Example custom config** (`~/.config/jdash/config.yaml`):
 ```yaml
@@ -165,7 +183,7 @@ sections:
 
 **Default layout:**
 ```yaml
-layout: [key, type, summary, status, assignee, component, sprint, updated]
+layout: [key, type, summary, status, assignee, component, updated]
 ```
 
 **Empty states:** When a section has no issues, display a placeholder message similar to gh-dash (e.g., "No issues found").
