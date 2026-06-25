@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ankitpokhrel/jira-cli/pkg/jira"
+	"github.com/tesshuflower/jdash/internal/config"
 	jiraClient "github.com/tesshuflower/jdash/internal/jira"
 )
 
@@ -28,35 +29,65 @@ var (
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
+
+	tabStyle = lipgloss.NewStyle().
+			Padding(0, 2).
+			Foreground(lipgloss.Color("250"))
+
+	activeTabStyle = lipgloss.NewStyle().
+				Padding(0, 2).
+				Foreground(lipgloss.Color("229")).
+				Background(lipgloss.Color("57")).
+				Bold(true)
 )
 
 type Model struct {
-	table      table.Model
+	sections         []sectionModel
+	activeSectionIdx int
+	client           *jiraClient.Client
+	width            int
+	height           int
+}
+
+type sectionModel struct {
+	config  config.SectionConfig
+	table   table.Model
+	issues  []*jira.Issue
+	loading bool
+	err     error
+	layout  []string // Column layout for this section
+}
+
+type sectionIssuesLoadedMsg struct {
+	sectionIdx int
 	issues     []*jira.Issue
-	client     *jiraClient.Client
-	login      string // User's Jira login email
-	projectKey string // Default project key from config
-	width      int
-	height     int
 	err        error
-	loading    bool
 }
 
-type issuesLoadedMsg struct {
-	issues []*jira.Issue
-	err    error
-}
-
-func NewModel(client *jiraClient.Client, login, projectKey string) Model {
-	columns := []table.Column{
-		{Title: "Key", Width: 12},
-		{Title: "Type", Width: 10},
-		{Title: "Summary", Width: 50},
-		{Title: "Status", Width: 15},
-		{Title: "Assignee", Width: 20},
-		{Title: "Component", Width: 15},
-		{Title: "Updated", Width: 12},
+func NewModel(client *jiraClient.Client, appCfg *config.AppConfig) Model {
+	// Create a section for each config section
+	sections := make([]sectionModel, len(appCfg.Jdash.Sections))
+	for i, secCfg := range appCfg.Jdash.Sections {
+		// Use section-specific layout if provided, otherwise global default
+		layout := secCfg.Layout
+		if len(layout) == 0 {
+			layout = appCfg.Jdash.Layout
+		}
+		sections[i] = newSectionModel(secCfg, layout)
 	}
+
+	m := Model{
+		sections:         sections,
+		activeSectionIdx: 0,
+		client:           client,
+	}
+
+	return m
+}
+
+func newSectionModel(secCfg config.SectionConfig, layout []string) sectionModel {
+	// Build columns from layout
+	columns := buildColumnsFromLayout(layout)
 
 	t := table.New(
 		table.WithColumns(columns),
@@ -77,32 +108,81 @@ func NewModel(client *jiraClient.Client, login, projectKey string) Model {
 		Bold(false)
 	t.SetStyles(s)
 
-	m := Model{
-		table:      t,
-		client:     client,
-		login:      login,
-		projectKey: projectKey,
-		loading:    true,
+	return sectionModel{
+		config:  secCfg,
+		table:   t,
+		layout:  layout,
+		loading: true,
+	}
+}
+
+// buildColumnsFromLayout creates table columns from layout config
+func buildColumnsFromLayout(layout []string) []table.Column {
+	// Column widths - sensible defaults for each field
+	columnWidths := map[string]int{
+		"key":       12,
+		"type":      10,
+		"summary":   50,
+		"status":    15,
+		"assignee":  20,
+		"component": 15,
+		"sprint":    15,
+		"updated":   12,
+		"priority":  10,
+		"reporter":  20,
 	}
 
-	return m
+	// Column titles - how to display each field
+	columnTitles := map[string]string{
+		"key":       "Key",
+		"type":      "Type",
+		"summary":   "Summary",
+		"status":    "Status",
+		"assignee":  "Assignee",
+		"component": "Component",
+		"sprint":    "Sprint",
+		"updated":   "Updated",
+		"priority":  "Priority",
+		"reporter":  "Reporter",
+	}
+
+	columns := make([]table.Column, len(layout))
+	for i, field := range layout {
+		title := columnTitles[field]
+		if title == "" {
+			title = strings.Title(field) // Fallback for unknown fields
+		}
+		width := columnWidths[field]
+		if width == 0 {
+			width = 15 // Default width for unknown fields
+		}
+		columns[i] = table.Column{
+			Title: title,
+			Width: width,
+		}
+	}
+
+	return columns
 }
 
 func (m Model) Init() tea.Cmd {
-	// Return the fetch command to run on startup
-	return m.fetchIssues()
+	// Fetch all sections in parallel
+	cmds := make([]tea.Cmd, len(m.sections))
+	for i := range m.sections {
+		cmds[i] = m.fetchSectionIssues(i)
+	}
+	return tea.Batch(cmds...)
 }
 
-func (m Model) fetchIssues() tea.Cmd {
+func (m Model) fetchSectionIssues(sectionIdx int) tea.Cmd {
 	return func() tea.Msg {
-		// Note: currentUser() doesn't work in some Jira instances, using login email from config
-		// Also scope to project if configured
-		jql := fmt.Sprintf(`assignee = "%s" AND resolution = Unresolved`, m.login)
-		if m.projectKey != "" {
-			jql = fmt.Sprintf(`project = %s AND %s`, m.projectKey, jql)
+		section := m.sections[sectionIdx]
+		issues, err := m.client.SearchIssues(section.config.Filters, 100)
+		return sectionIssuesLoadedMsg{
+			sectionIdx: sectionIdx,
+			issues:     issues,
+			err:        err,
 		}
-		issues, err := m.client.SearchIssues(jql, 100)
-		return issuesLoadedMsg{issues: issues, err: err}
 	}
 }
 
@@ -115,57 +195,94 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		// Table gets ~60% of height, detail pane gets rest
+		// Account for section tabs (2 lines) + borders
 		tableHeight := (m.height * 6) / 10
-		m.table.SetHeight(tableHeight - 4) // Account for borders
-		m.table.SetWidth(m.width - 4)
+		for i := range m.sections {
+			m.sections[i].table.SetHeight(tableHeight - 6)
+			m.sections[i].table.SetWidth(m.width - 4)
+		}
 
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		}
 
-	case issuesLoadedMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.err = msg.err
+		case "h", "left", "shift+tab":
+			// Previous section
+			if m.activeSectionIdx > 0 {
+				m.activeSectionIdx--
+			}
+			return m, nil
+
+		case "l", "right", "tab":
+			// Next section
+			if m.activeSectionIdx < len(m.sections)-1 {
+				m.activeSectionIdx++
+			}
 			return m, nil
 		}
-		m.issues = msg.issues
-		m.table.SetRows(issuesToRows(msg.issues))
+
+	case sectionIssuesLoadedMsg:
+		if msg.sectionIdx >= 0 && msg.sectionIdx < len(m.sections) {
+			m.sections[msg.sectionIdx].loading = false
+			if msg.err != nil {
+				m.sections[msg.sectionIdx].err = msg.err
+			} else {
+				m.sections[msg.sectionIdx].issues = msg.issues
+				// Build rows using section's layout
+				m.sections[msg.sectionIdx].table.SetRows(issuesToRows(msg.issues, m.sections[msg.sectionIdx].layout))
+			}
+		}
+		return m, nil
 	}
 
-	m.table, cmd = m.table.Update(msg)
+	// Update the active section's table
+	if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+		m.sections[m.activeSectionIdx].table, cmd = m.sections[m.activeSectionIdx].table.Update(msg)
+	}
+
 	return m, cmd
 }
 
 func (m Model) View() tea.View {
 	var content string
 
-	if m.err != nil {
-		content = errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress q to quit", m.err))
-	} else if m.loading {
-		content = "Loading issues...\n\nPress q to quit"
-	} else {
-		// Always render the full UI (table + preview), even if empty
-		// Render table
-		tableView := tableStyle.Render(m.table.View())
+	// Render section tabs
+	tabs := m.renderTabs()
 
-		// Render detail pane
-		detailView := m.renderDetailPane()
+	// Render active section
+	if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+		activeSection := m.sections[m.activeSectionIdx]
 
-		// Stack vertically
-		content = lipgloss.JoinVertical(
-			lipgloss.Left,
-			tableView,
-			detailView,
-		)
+		if activeSection.err != nil {
+			sectionContent := errorStyle.Render(fmt.Sprintf("Error loading section:\n%v", activeSection.err))
+			content = lipgloss.JoinVertical(lipgloss.Left, tabs, sectionContent)
+		} else if activeSection.loading {
+			sectionContent := "Loading issues..."
+			content = lipgloss.JoinVertical(lipgloss.Left, tabs, sectionContent)
+		} else {
+			// Render table
+			tableView := tableStyle.Render(activeSection.table.View())
 
-		// Add hint at bottom if no issues
-		if len(m.issues) == 0 {
-			hint := "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("No issues found. Press q to quit.")
-			content = content + hint
+			// Render detail pane
+			detailView := m.renderDetailPane(activeSection)
+
+			// Stack: tabs + table + detail
+			content = lipgloss.JoinVertical(
+				lipgloss.Left,
+				tabs,
+				tableView,
+				detailView,
+			)
+
+			// Add hint at bottom if no issues
+			if len(activeSection.issues) == 0 {
+				hint := "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("No issues found in this section")
+				content = content + hint
+			}
 		}
+	} else {
+		content = "No sections configured"
 	}
 
 	// Create view with alt screen enabled for full terminal takeover
@@ -174,16 +291,46 @@ func (m Model) View() tea.View {
 	return v
 }
 
-func (m Model) renderDetailPane() string {
-	if len(m.issues) == 0 || m.table.Cursor() < 0 || m.table.Cursor() >= len(m.issues) {
+func (m Model) renderTabs() string {
+	var tabs []string
+	for i, section := range m.sections {
+		style := tabStyle
+		if i == m.activeSectionIdx {
+			style = activeTabStyle
+		}
+		tabs = append(tabs, style.Render(section.config.Title))
+	}
+	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  q: quit")
+
+	// Show current section's query
+	var queryLine string
+	if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+		activeSection := m.sections[m.activeSectionIdx]
+		queryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
+
+		// Truncate query if too long
+		query := activeSection.config.Filters
+		maxWidth := m.width - 10
+		if maxWidth > 0 && len(query) > maxWidth {
+			query = query[:maxWidth-3] + "..."
+		}
+		queryLine = "\n" + queryStyle.Render("  "+query)
+	}
+
+	return tabBar + hint + queryLine + "\n"
+}
+
+func (m Model) renderDetailPane(section sectionModel) string {
+	if len(section.issues) == 0 || section.table.Cursor() < 0 || section.table.Cursor() >= len(section.issues) {
 		placeholder := "No issue selected"
-		if len(m.issues) == 0 {
+		if len(section.issues) == 0 {
 			placeholder = "No issues found"
 		}
 		return detailStyle.Width(m.width - 4).Render(placeholder)
 	}
 
-	issue := m.issues[m.table.Cursor()]
+	issue := section.issues[section.table.Cursor()]
 
 	// Build detail content
 	var details strings.Builder
@@ -225,40 +372,69 @@ func (m Model) renderDetailPane() string {
 	return detailStyle.Width(m.width - 4).Render(details.String())
 }
 
-func issuesToRows(issues []*jira.Issue) []table.Row {
+func issuesToRows(issues []*jira.Issue, layout []string) []table.Row {
 	rows := make([]table.Row, len(issues))
 	for i, issue := range issues {
-		assignee := "Unassigned"
-		if issue.Fields.Assignee.Name != "" {
-			assignee = issue.Fields.Assignee.Name
+		row := make(table.Row, len(layout))
+		for j, field := range layout {
+			row[j] = getIssueFieldValue(issue, field)
 		}
+		rows[i] = row
+	}
+	return rows
+}
 
-		component := ""
-		if len(issue.Fields.Components) > 0 {
-			component = issue.Fields.Components[0].Name
-		}
+// getIssueFieldValue extracts the value for a specific field from an issue
+func getIssueFieldValue(issue *jira.Issue, field string) string {
+	switch field {
+	case "key":
+		return issue.Key
 
-		// Truncate summary if too long
+	case "type":
+		return issue.Fields.IssueType.Name
+
+	case "summary":
 		summary := issue.Fields.Summary
 		if len(summary) > 48 {
 			summary = summary[:45] + "..."
 		}
+		return summary
 
-		// Format updated date (just take first 10 chars for date)
+	case "status":
+		return issue.Fields.Status.Name
+
+	case "assignee":
+		if issue.Fields.Assignee.Name != "" {
+			return issue.Fields.Assignee.Name
+		}
+		return "Unassigned"
+
+	case "component":
+		if len(issue.Fields.Components) > 0 {
+			return issue.Fields.Components[0].Name
+		}
+		return ""
+
+	case "sprint":
+		// Sprint field would need to be added to issue fetching
+		// For now, return empty
+		return ""
+
+	case "updated":
 		updated := issue.Fields.Updated
 		if len(updated) > 10 {
-			updated = updated[:10]
+			return updated[:10]
 		}
+		return updated
 
-		rows[i] = table.Row{
-			issue.Key,
-			issue.Fields.IssueType.Name,
-			summary,
-			issue.Fields.Status.Name,
-			assignee,
-			component,
-			updated,
-		}
+	case "priority":
+		return issue.Fields.Priority.Name
+
+	case "reporter":
+		return issue.Fields.Reporter.Name
+
+	default:
+		// Unknown field
+		return ""
 	}
-	return rows
 }

@@ -29,9 +29,40 @@ type JiraCLIConfig struct {
 	} `yaml:"mtls"`
 }
 
-// Load reads the jira-cli config and returns a jira.Config ready for NewClient
-// Returns: (*jira.Config, installation, login, projectKey, error)
-func Load() (*jira.Config, string, string, string, error) {
+// AppConfig holds all configuration for jdash
+type AppConfig struct {
+	JiraCfg      *jira.Config
+	Installation string
+	Login        string
+	ProjectKey   string
+	Jdash        JdashConfig
+}
+
+// LoadAll reads both jira-cli and jdash configs and returns combined AppConfig
+func LoadAll() (*AppConfig, error) {
+	// Load jira-cli config
+	jiraCfg, installation, login, projectKey, err := loadJiraCLIConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	// Load jdash config
+	jdashCfg, err := LoadJdashConfig(login)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load jdash config: %w", err)
+	}
+
+	return &AppConfig{
+		JiraCfg:      jiraCfg,
+		Installation: installation,
+		Login:        login,
+		ProjectKey:   projectKey,
+		Jdash:        jdashCfg,
+	}, nil
+}
+
+// loadJiraCLIConfig reads the jira-cli config and returns a jira.Config ready for NewClient
+func loadJiraCLIConfig() (*jira.Config, string, string, string, error) {
 	// Locate config file
 	configPath, err := locateConfigFile()
 	if err != nil {

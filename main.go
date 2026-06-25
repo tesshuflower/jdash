@@ -11,22 +11,22 @@ import (
 )
 
 func main() {
-	// Load jira-cli config
-	cfg, installation, login, projectKey, err := config.Load()
+	// Load all config (jira-cli + jdash)
+	appCfg, err := config.LoadAll()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Create Jira client
-	client, err := jira.NewClient(cfg, installation)
+	client, err := jira.NewClient(appCfg.JiraCfg, appCfg.Installation)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating Jira client: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Create and run TUI
-	model := ui.NewModel(client, login, projectKey)
+	model := ui.NewModel(client, appCfg)
 
 	// Run the program (Init will fetch issues)
 	p := tea.NewProgram(model)

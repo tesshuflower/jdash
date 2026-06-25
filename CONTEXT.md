@@ -130,23 +130,35 @@ Start with status category-based coloring (To Do, In Progress, Done map to diffe
 ## Configuration
 
 ### Jira Connection
-jdash reads Jira server and authentication settings from jira-cli's config at `~/.config/jira-cli/jira.yml`. Users must install and configure jira-cli before using jdash (see ADR-0002).
+jdash reads Jira server and authentication settings from jira-cli's config at `~/.config/.jira/.config.yml`. Users must install and configure jira-cli before using jdash (see ADR-0002).
+
+**Note on `currentUser()` JQL function:** Some Jira instances don't support `currentUser()` in JQL queries. jdash works around this by reading the login email from jira-cli config and using it directly in queries (e.g., `assignee = "user@example.com"` instead of `assignee = currentUser()`).
 
 ### jdash Config File
-jdash's own configuration lives at `~/.jdash.yml` (similar to gh-dash's `~/.gh-dash.yml`).
+jdash's own configuration lives at `~/.config/jdash/config.yaml` (follows XDG Base Directory specification).
 
 When jdash runs without a config file, it provides these defaults:
 
-**Default sections:**
+**Default sections (when no config file exists):**
+```yaml
+sections:
+  - title: In Sprint
+    filters: assignee = "user@example.com" AND sprint in openSprints()
+  - title: No Sprint Assigned
+    filters: assignee = "user@example.com" AND sprint is EMPTY AND resolution = Unresolved
+```
+
+Where `user@example.com` is automatically substituted with your login email from jira-cli config.
+
+**Example custom config** (`~/.config/jdash/config.yaml`):
 ```yaml
 sections:
   - title: In Sprint
     filters: assignee = currentUser() AND sprint in openSprints()
   - title: No Sprint Assigned
     filters: assignee = currentUser() AND sprint is EMPTY AND resolution = Unresolved
-  # Uncomment and customize for your team:
-  # - title: Team Sprint
-  #   filters: sprint in openSprints() AND component = "YourComponent"
+  - title: Team Sprint (ACM)
+    filters: sprint in openSprints() AND component = "ACM"
 ```
 
 **Why no "team" view by default?** Jira teams organize differently (by component, project, board, or labels). A generic `sprint in openSprints()` returns too much noise across all accessible projects. Users add team-scoped sections in their config once they know their organization's structure.
