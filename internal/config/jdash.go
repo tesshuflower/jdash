@@ -131,9 +131,10 @@ sections:
     filters: project = ACM AND type = Bug AND resolution = Unresolved
     layout: [key, summary, status, priority, reporter, updated]
 
-  # Example: Team view scoped to component
+  # Example: Team view scoped to component with lazy loading
   # - title: Team Sprint (ACM)
   #   filters: sprint in openSprints() AND component = "ACM"
+  #   lazy: true  # Don't load until user switches to this section
 
 # Global column layout (used when section doesn't specify its own)
 # Available fields: key, type, summary, status, assignee, component, sprint, updated, created, priority, reporter, labels, resolution, fixversion, parent
