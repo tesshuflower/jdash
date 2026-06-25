@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ankitpokhrel/jira-cli/pkg/browser"
+	"github.com/ankitpokhrel/jira-cli/pkg/jira"
 	"github.com/tesshuflower/jdash/internal/config"
 	jiraClient "github.com/tesshuflower/jdash/internal/jira"
 )
@@ -44,17 +45,21 @@ var (
 )
 
 type Model struct {
-	sections         []sectionModel
-	activeSectionIdx int
-	client           *jiraClient.Client
-	serverURL        string
-	projectKey       string
-	width            int
-	height           int
-	editing          bool
-	queryInput       textinput.Model
-	commenting       bool
-	commentInput     textarea.Model
+	sections            []sectionModel
+	activeSectionIdx    int
+	client              *jiraClient.Client
+	serverURL           string
+	projectKey          string
+	width               int
+	height              int
+	editing             bool
+	queryInput          textinput.Model
+	commenting          bool
+	commentInput        textarea.Model
+	transitioning       bool
+	transitions         []*jira.Transition
+	transitionCursor    int
+	transitionIssueKey  string
 }
 
 type sectionModel struct {
@@ -73,6 +78,17 @@ type sectionIssuesLoadedMsg struct {
 }
 
 type commentAddedMsg struct {
+	issueKey string
+	err      error
+}
+
+type transitionsLoadedMsg struct {
+	transitions []*jira.Transition
+	issueKey    string
+	err         error
+}
+
+type transitionDoneMsg struct {
 	issueKey string
 	err      error
 }
@@ -237,6 +253,27 @@ func (m Model) addComment(comment string) tea.Cmd {
 	}
 }
 
+func (m Model) fetchTransitions(issueKey string) tea.Cmd {
+	return func() tea.Msg {
+		transitions, err := m.client.GetTransitions(issueKey)
+		return transitionsLoadedMsg{
+			transitions: transitions,
+			issueKey:    issueKey,
+			err:         err,
+		}
+	}
+}
+
+func (m Model) transitionIssue(transition *jira.Transition) tea.Cmd {
+	return func() tea.Msg {
+		err := m.client.TransitionIssue(m.transitionIssueKey, transition.ID.String(), transition.Name)
+		return transitionDoneMsg{
+			issueKey: m.transitionIssueKey,
+			err:      err,
+		}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -298,6 +335,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Handle transitioning mode keys
+		if m.transitioning {
+			switch msg.String() {
+			case "enter":
+				// Execute selected transition
+				if m.transitionCursor >= 0 && m.transitionCursor < len(m.transitions) {
+					selectedTransition := m.transitions[m.transitionCursor]
+					m.transitioning = false
+					return m, m.transitionIssue(selectedTransition)
+				}
+				return m, nil
+
+			case "esc":
+				// Cancel transition
+				m.transitioning = false
+				return m, nil
+
+			case "j", "down":
+				// Move cursor down
+				if m.transitionCursor < len(m.transitions)-1 {
+					m.transitionCursor++
+				}
+				return m, nil
+
+			case "k", "up":
+				// Move cursor up
+				if m.transitionCursor > 0 {
+					m.transitionCursor--
+				}
+				return m, nil
+			}
+		}
+
 		// Normal mode keys
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -324,6 +394,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.commentInput.Focus()
 					m.commentInput.SetWidth(m.width - 8)
 					m.commentInput.SetHeight(10)
+				}
+			}
+			return m, nil
+
+		case "s":
+			// Enter status change mode
+			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+				activeSection := m.sections[m.activeSectionIdx]
+				if len(activeSection.issues) > 0 {
+					cursor := activeSection.table.Cursor()
+					if cursor >= 0 && cursor < len(activeSection.issues) {
+						issue := activeSection.issues[cursor]
+						return m, m.fetchTransitions(issue.Key)
+					}
 				}
 			}
 			return m, nil
@@ -367,6 +451,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commentAddedMsg:
 		// TODO: Show feedback to user (success/error)
 		// For now, just ignore - comment was added in background
+		return m, nil
+
+	case transitionsLoadedMsg:
+		if msg.err != nil {
+			// TODO: Show error to user
+			return m, nil
+		}
+		// Store transitions and reset cursor
+		m.transitions = msg.transitions
+		m.transitionCursor = 0
+		m.transitionIssueKey = msg.issueKey
+		m.transitioning = true
+		return m, nil
+
+	case transitionDoneMsg:
+		if msg.err == nil {
+			// Re-fetch the active section to refresh the status
+			return m, m.fetchSectionIssues(m.activeSectionIdx)
+		}
+		// TODO: Show error to user
 		return m, nil
 	}
 
@@ -446,7 +550,7 @@ func (m Model) renderTabs() string {
 		queryLine = "\n  " + m.queryInput.View()
 	} else {
 		// Normal mode hints
-		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  /: edit query  c: comment  o: open in browser  q: quit")
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  /: edit query  c: comment  s: status  o: open in browser  q: quit")
 
 		// Show current section's query (read-only)
 		if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
@@ -525,6 +629,31 @@ func (m Model) renderDetailPane(section sectionModel) string {
 		commentView.WriteString("\n\n")
 		commentView.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Ctrl+D: submit  Esc: cancel"))
 		return detailStyle.Width(m.width - 4).Render(commentView.String())
+	}
+
+	// If transitioning, show the transition list instead of details
+	if m.transitioning {
+		var transitionView strings.Builder
+		transitionView.WriteString(titleStyle.Render(fmt.Sprintf("Change Status - %s", issue.Key)))
+		transitionView.WriteString("\n\n")
+
+		// Render each transition with compact styling (gh-dash style)
+		selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57")).Bold(true)
+		normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+
+		for i, t := range m.transitions {
+			var line string
+			if i == m.transitionCursor {
+				line = selectedStyle.Render(fmt.Sprintf("> %s", t.Name))
+			} else {
+				line = normalStyle.Render(fmt.Sprintf("  %s", t.Name))
+			}
+			transitionView.WriteString(line + "\n")
+		}
+
+		transitionView.WriteString("\n")
+		transitionView.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("j/k: navigate  Enter: select  Esc: cancel"))
+		return detailStyle.Width(m.width - 4).Render(transitionView.String())
 	}
 
 	// Build detail content

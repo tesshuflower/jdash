@@ -116,3 +116,23 @@ func (c *Client) SearchIssues(jql string, limit uint) ([]*EnrichedIssue, error) 
 func (c *Client) AddComment(key, comment string) error {
 	return c.client.AddIssueComment(key, comment, false)
 }
+
+// GetTransitions fetches available workflow transitions for an issue
+func (c *Client) GetTransitions(key string) ([]*jira.Transition, error) {
+	if c.installation == "Cloud" {
+		return c.client.Transitions(key)
+	}
+	return c.client.TransitionsV2(key)
+}
+
+// TransitionIssue executes a workflow transition on an issue
+func (c *Client) TransitionIssue(key, transitionID, transitionName string) error {
+	req := &jira.TransitionRequest{
+		Transition: &jira.TransitionRequestData{
+			ID:   transitionID,
+			Name: transitionName,
+		},
+	}
+	_, err := c.client.Transition(key, req)
+	return err
+}
