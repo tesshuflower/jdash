@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -25,12 +24,17 @@ type SectionConfig struct {
 }
 
 // LoadJdashConfig loads jdash config from ~/.config/jdash/config.yaml
-// If the file doesn't exist, returns default config with login email substituted
+// If the file doesn't exist, creates it with defaults and returns default config
 func LoadJdashConfig(login string) (JdashConfig, error) {
 	configPath := getJdashConfigPath()
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// Write default config so user has a template to customize
+		if writeErr := writeDefaultConfig(configPath, login); writeErr != nil {
+			// Non-fatal: still return defaults even if write fails
+			fmt.Fprintf(os.Stderr, "Warning: could not write default config: %v\n", writeErr)
+		}
 		// Return default config with login email substituted
 		return getDefaultConfig(login), nil
 	}
@@ -107,29 +111,27 @@ func getDefaultLayout() []string {
 	return []string{"key", "type", "summary", "status", "assignee", "component", "sprint", "updated"}
 }
 
-// SaveExampleConfig writes an example config file to ~/.config/jdash/config.yaml.example
-// This is a helper for users to get started
-func SaveExampleConfig() error {
-	configPath := getJdashConfigPath()
-	examplePath := strings.Replace(configPath, "config.yaml", "config.yaml.example", 1)
-
-	example := `# jdash configuration file
+// writeDefaultConfig writes a default config file with the user's login substituted
+func writeDefaultConfig(configPath, login string) error {
+	// Config template with login substitution
+	template := `# jdash configuration file
+# Auto-generated on first run. Edit this file to customize your views.
 # Location: ~/.config/jdash/config.yaml
 
 # Sections define the filtered views of issues
 sections:
   - title: In Sprint
-    filters: assignee = currentUser() AND sprint in openSprints()
+    filters: assignee = "%s" AND sprint in openSprints()
     # Optional: per-section layout override
-    layout: [key, summary, status, assignee, sprint]
+    # layout: [key, summary, status, assignee, sprint]
 
   - title: No Sprint / Future Sprint
-    filters: assignee = currentUser() AND (sprint is EMPTY OR sprint in futureSprints()) AND resolution = Unresolved
+    filters: assignee = "%s" AND (sprint is EMPTY OR sprint in futureSprints()) AND resolution = Unresolved
 
   # Example: Bugs with priority-focused columns
-  - title: Open Bugs
-    filters: project = ACM AND type = Bug AND resolution = Unresolved
-    layout: [key, summary, status, priority, reporter, updated]
+  # - title: Open Bugs
+  #   filters: project = ACM AND type = Bug AND resolution = Unresolved
+  #   layout: [key, summary, status, priority, reporter, updated]
 
   # Example: Team view scoped to component with lazy loading
   # - title: Team Sprint (ACM)
@@ -146,14 +148,18 @@ layout: [key, type, summary, status, assignee, component, sprint, updated]
 sprint_field: customfield_10020
 `
 
+	// Substitute login email
+	config := fmt.Sprintf(template, login, login)
+
 	// Ensure directory exists
-	dir := filepath.Dir(examplePath)
+	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	if err := os.WriteFile(examplePath, []byte(example), 0644); err != nil {
-		return fmt.Errorf("failed to write example config: %w", err)
+	// Write config file
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		return fmt.Errorf("failed to write default config: %w", err)
 	}
 
 	return nil
