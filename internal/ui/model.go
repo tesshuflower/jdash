@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/ankitpokhrel/jira-cli/pkg/browser"
 	"github.com/ankitpokhrel/jira-cli/pkg/jira"
 	"github.com/tesshuflower/jdash/internal/config"
 	jiraClient "github.com/tesshuflower/jdash/internal/jira"
@@ -45,6 +46,8 @@ type Model struct {
 	sections         []sectionModel
 	activeSectionIdx int
 	client           *jiraClient.Client
+	serverURL        string
+	projectKey       string
 	width            int
 	height           int
 }
@@ -80,6 +83,8 @@ func NewModel(client *jiraClient.Client, appCfg *config.AppConfig) Model {
 		sections:         sections,
 		activeSectionIdx: 0,
 		client:           client,
+		serverURL:        appCfg.JiraCfg.Server,
+		projectKey:       appCfg.ProjectKey,
 	}
 
 	return m
@@ -220,6 +225,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeSectionIdx++
 			}
 			return m, nil
+
+		case "o":
+			// Open selected issue in browser
+			return m, m.openSelectedIssueInBrowser()
+
+		case "O":
+			// Open browser to create new issue
+			return m, m.openCreateIssueInBrowser()
 		}
 
 	case sectionIssuesLoadedMsg:
@@ -301,7 +314,7 @@ func (m Model) renderTabs() string {
 		tabs = append(tabs, style.Render(section.config.Title))
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  q: quit")
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  o: open in browser  q: quit")
 
 	// Show current section's query
 	var queryLine string
@@ -319,6 +332,45 @@ func (m Model) renderTabs() string {
 	}
 
 	return tabBar + hint + queryLine + "\n"
+}
+
+// openSelectedIssueInBrowser opens the currently selected issue in the default browser
+func (m Model) openSelectedIssueInBrowser() tea.Cmd {
+	return func() tea.Msg {
+		if m.activeSectionIdx < 0 || m.activeSectionIdx >= len(m.sections) {
+			return nil
+		}
+
+		activeSection := m.sections[m.activeSectionIdx]
+		if len(activeSection.issues) == 0 {
+			return nil
+		}
+
+		cursor := activeSection.table.Cursor()
+		if cursor < 0 || cursor >= len(activeSection.issues) {
+			return nil
+		}
+
+		issue := activeSection.issues[cursor]
+		url := fmt.Sprintf("%s/browse/%s", m.serverURL, issue.Key)
+
+		// Open in browser (cross-platform via jira-cli's browser package)
+		_ = browser.Browse(url) // Fire and forget
+
+		return nil
+	}
+}
+
+// openCreateIssueInBrowser opens the browser to create a new issue
+func (m Model) openCreateIssueInBrowser() tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("%s/secure/CreateIssue!default.jspa", m.serverURL)
+
+		// Open in browser (cross-platform via jira-cli's browser package)
+		_ = browser.Browse(url) // Fire and forget
+
+		return nil
+	}
 }
 
 func (m Model) renderDetailPane(section sectionModel) string {
