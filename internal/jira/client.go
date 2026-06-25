@@ -136,3 +136,27 @@ func (c *Client) TransitionIssue(key, transitionID, transitionName string) error
 	_, err := c.client.Transition(key, req)
 	return err
 }
+
+// GetBoards fetches all boards for a project
+func (c *Client) GetBoards(projectKey string) ([]*jira.Board, error) {
+	result, err := c.client.Boards(projectKey, "")
+	if err != nil {
+		return nil, err
+	}
+	return result.Boards, nil
+}
+
+// GetBoardSprints fetches active and future sprints for a board
+func (c *Client) GetBoardSprints(boardID int) ([]*jira.Sprint, error) {
+	// Fetch active and future sprints
+	result, err := c.client.Sprints(boardID, "state=active,future", 0, 50)
+	if err != nil {
+		return nil, err
+	}
+	return result.Sprints, nil
+}
+
+// MoveIssueToSprint moves an issue to a sprint
+func (c *Client) MoveIssueToSprint(issueKey, sprintID string) error {
+	return c.client.SprintIssuesAdd(sprintID, issueKey)
+}

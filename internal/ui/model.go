@@ -42,7 +42,33 @@ var (
 				Foreground(lipgloss.Color("229")).
 				Background(lipgloss.Color("57")).
 				Bold(true)
+
+	// Selector styles (gh-dash style)
+	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57")).Bold(true)
+	normalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	hintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 )
+
+// renderSelectorList renders a compact selector list (gh-dash style)
+func renderSelectorList(title string, items []string, cursor int) string {
+	var view strings.Builder
+	view.WriteString(titleStyle.Render(title))
+	view.WriteString("\n\n")
+
+	for i, item := range items {
+		var line string
+		if i == cursor {
+			line = selectedStyle.Render(fmt.Sprintf("> %s", item))
+		} else {
+			line = normalStyle.Render(fmt.Sprintf("  %s", item))
+		}
+		view.WriteString(line + "\n")
+	}
+
+	view.WriteString("\n")
+	view.WriteString(hintStyle.Render("j/k: navigate  Enter: select  Esc: cancel"))
+	return view.String()
+}
 
 type Model struct {
 	sections            []sectionModel
@@ -60,6 +86,10 @@ type Model struct {
 	transitions         []*jira.Transition
 	transitionCursor    int
 	transitionIssueKey  string
+	movingSprint        bool
+	sprints             []*jira.Sprint
+	sprintCursor        int
+	sprintIssueKey      string
 }
 
 type sectionModel struct {
@@ -89,6 +119,17 @@ type transitionsLoadedMsg struct {
 }
 
 type transitionDoneMsg struct {
+	issueKey string
+	err      error
+}
+
+type sprintsLoadedMsg struct {
+	sprints    []*jira.Sprint
+	issueKey   string
+	err        error
+}
+
+type sprintMoveMsg struct {
 	issueKey string
 	err      error
 }
@@ -274,6 +315,39 @@ func (m Model) transitionIssue(transition *jira.Transition) tea.Cmd {
 	}
 }
 
+func (m Model) fetchSprints(issueKey string) tea.Cmd {
+	return func() tea.Msg {
+		// Get boards for the project
+		boards, err := m.client.GetBoards(m.projectKey)
+		if err != nil {
+			return sprintsLoadedMsg{err: err}
+		}
+		if len(boards) == 0 {
+			return sprintsLoadedMsg{err: fmt.Errorf("no boards found for project %s", m.projectKey)}
+		}
+
+		// Use the first board (most common case: one scrum board per project)
+		// TODO: Allow user to select board if multiple exist
+		boardID := boards[0].ID
+		sprints, err := m.client.GetBoardSprints(boardID)
+		return sprintsLoadedMsg{
+			sprints:  sprints,
+			issueKey: issueKey,
+			err:      err,
+		}
+	}
+}
+
+func (m Model) moveToSprint(sprint *jira.Sprint) tea.Cmd {
+	return func() tea.Msg {
+		err := m.client.MoveIssueToSprint(m.sprintIssueKey, fmt.Sprintf("%d", sprint.ID))
+		return sprintMoveMsg{
+			issueKey: m.sprintIssueKey,
+			err:      err,
+		}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -368,6 +442,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Handle movingSprint mode keys
+		if m.movingSprint {
+			switch msg.String() {
+			case "enter":
+				// Execute selected sprint move
+				if m.sprintCursor >= 0 && m.sprintCursor < len(m.sprints) {
+					selectedSprint := m.sprints[m.sprintCursor]
+					m.movingSprint = false
+					return m, m.moveToSprint(selectedSprint)
+				}
+				return m, nil
+
+			case "esc":
+				// Cancel sprint move
+				m.movingSprint = false
+				return m, nil
+
+			case "j", "down":
+				// Move cursor down
+				if m.sprintCursor < len(m.sprints)-1 {
+					m.sprintCursor++
+				}
+				return m, nil
+
+			case "k", "up":
+				// Move cursor up
+				if m.sprintCursor > 0 {
+					m.sprintCursor--
+				}
+				return m, nil
+			}
+		}
+
 		// Normal mode keys
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -407,6 +514,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if cursor >= 0 && cursor < len(activeSection.issues) {
 						issue := activeSection.issues[cursor]
 						return m, m.fetchTransitions(issue.Key)
+					}
+				}
+			}
+			return m, nil
+
+		case "m":
+			// Enter sprint move mode
+			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+				activeSection := m.sections[m.activeSectionIdx]
+				if len(activeSection.issues) > 0 {
+					cursor := activeSection.table.Cursor()
+					if cursor >= 0 && cursor < len(activeSection.issues) {
+						issue := activeSection.issues[cursor]
+						return m, m.fetchSprints(issue.Key)
 					}
 				}
 			}
@@ -468,6 +589,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transitionDoneMsg:
 		if msg.err == nil {
 			// Re-fetch the active section to refresh the status
+			return m, m.fetchSectionIssues(m.activeSectionIdx)
+		}
+		// TODO: Show error to user
+		return m, nil
+
+	case sprintsLoadedMsg:
+		if msg.err != nil {
+			// TODO: Show error to user
+			return m, nil
+		}
+		// Store sprints and reset cursor
+		m.sprints = msg.sprints
+		m.sprintCursor = 0
+		m.sprintIssueKey = msg.issueKey
+		m.movingSprint = true
+		return m, nil
+
+	case sprintMoveMsg:
+		if msg.err == nil {
+			// Re-fetch the active section to refresh the sprint
 			return m, m.fetchSectionIssues(m.activeSectionIdx)
 		}
 		// TODO: Show error to user
@@ -550,7 +691,7 @@ func (m Model) renderTabs() string {
 		queryLine = "\n  " + m.queryInput.View()
 	} else {
 		// Normal mode hints
-		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  /: edit query  c: comment  s: status  o: open in browser  q: quit")
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  /: edit query  c: comment  s: status  m: move to sprint  o: open in browser  q: quit")
 
 		// Show current section's query (read-only)
 		if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
@@ -633,27 +774,24 @@ func (m Model) renderDetailPane(section sectionModel) string {
 
 	// If transitioning, show the transition list instead of details
 	if m.transitioning {
-		var transitionView strings.Builder
-		transitionView.WriteString(titleStyle.Render(fmt.Sprintf("Change Status - %s", issue.Key)))
-		transitionView.WriteString("\n\n")
-
-		// Render each transition with compact styling (gh-dash style)
-		selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57")).Bold(true)
-		normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-
+		items := make([]string, len(m.transitions))
 		for i, t := range m.transitions {
-			var line string
-			if i == m.transitionCursor {
-				line = selectedStyle.Render(fmt.Sprintf("> %s", t.Name))
-			} else {
-				line = normalStyle.Render(fmt.Sprintf("  %s", t.Name))
-			}
-			transitionView.WriteString(line + "\n")
+			items[i] = t.Name
 		}
+		return detailStyle.Width(m.width - 4).Render(
+			renderSelectorList(fmt.Sprintf("Change Status - %s", issue.Key), items, m.transitionCursor),
+		)
+	}
 
-		transitionView.WriteString("\n")
-		transitionView.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("j/k: navigate  Enter: select  Esc: cancel"))
-		return detailStyle.Width(m.width - 4).Render(transitionView.String())
+	// If moving sprint, show the sprint list instead of details
+	if m.movingSprint {
+		items := make([]string, len(m.sprints))
+		for i, s := range m.sprints {
+			items[i] = fmt.Sprintf("%s (%s)", s.Name, s.Status)
+		}
+		return detailStyle.Width(m.width - 4).Render(
+			renderSelectorList(fmt.Sprintf("Move to Sprint - %s", issue.Key), items, m.sprintCursor),
+		)
 	}
 
 	// Build detail content
