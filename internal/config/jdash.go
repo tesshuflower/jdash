@@ -21,6 +21,7 @@ type SectionConfig struct {
 	Title   string   `yaml:"title"`
 	Filters string   `yaml:"filters"`
 	Layout  []string `yaml:"layout,omitempty"` // Optional per-section layout override
+	Lazy    bool     `yaml:"lazy,omitempty"`   // If true, don't load this section until user navigates to it
 }
 
 // LoadJdashConfig loads jdash config from ~/.config/jdash/config.yaml

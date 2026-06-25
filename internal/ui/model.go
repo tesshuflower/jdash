@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textarea"
@@ -69,6 +71,107 @@ func (i sprintItem) Title() string {
 func (i sprintItem) Description() string { return "" }
 func (i sprintItem) FilterValue() string { return i.sprint.Name }
 
+// keyMap defines all key bindings for jdash
+type keyMap struct {
+	// Navigation
+	SwitchSectionNext key.Binding
+	SwitchSectionPrev key.Binding
+	Navigate          key.Binding
+	FirstItem         key.Binding
+	LastItem          key.Binding
+
+	// Actions
+	Comment       key.Binding
+	ChangeStatus  key.Binding
+	MoveToSprint  key.Binding
+	OpenBrowser   key.Binding
+	CreateIssue   key.Binding
+
+	// Other
+	EditQuery   key.Binding
+	Refresh     key.Binding
+	RefreshAll  key.Binding
+	Help        key.Binding
+	Quit        key.Binding
+}
+
+func (k keyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Help}
+}
+
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.SwitchSectionNext, k.SwitchSectionPrev, k.Navigate, k.FirstItem, k.LastItem},
+		{k.Comment, k.ChangeStatus, k.MoveToSprint, k.OpenBrowser, k.CreateIssue},
+		{k.EditQuery, k.Refresh, k.RefreshAll, k.Help, k.Quit},
+	}
+}
+
+func newKeyMap() keyMap {
+	return keyMap{
+		SwitchSectionNext: key.NewBinding(
+			key.WithKeys("l", "right", "tab"),
+			key.WithHelp("l/→/tab", "next section"),
+		),
+		SwitchSectionPrev: key.NewBinding(
+			key.WithKeys("h", "left", "shift+tab"),
+			key.WithHelp("h/←/⇧tab", "prev section"),
+		),
+		Navigate: key.NewBinding(
+			key.WithKeys("j", "k", "up", "down"),
+			key.WithHelp("j/k/↑/↓", "navigate"),
+		),
+		FirstItem: key.NewBinding(
+			key.WithKeys("g"),
+			key.WithHelp("g", "first"),
+		),
+		LastItem: key.NewBinding(
+			key.WithKeys("G"),
+			key.WithHelp("G", "last"),
+		),
+		Comment: key.NewBinding(
+			key.WithKeys("c"),
+			key.WithHelp("c", "comment"),
+		),
+		ChangeStatus: key.NewBinding(
+			key.WithKeys("s"),
+			key.WithHelp("s", "change status"),
+		),
+		MoveToSprint: key.NewBinding(
+			key.WithKeys("m"),
+			key.WithHelp("m", "move to sprint"),
+		),
+		OpenBrowser: key.NewBinding(
+			key.WithKeys("o"),
+			key.WithHelp("o", "open in browser"),
+		),
+		CreateIssue: key.NewBinding(
+			key.WithKeys("O"),
+			key.WithHelp("O", "create issue"),
+		),
+		EditQuery: key.NewBinding(
+			key.WithKeys("/"),
+			key.WithHelp("/", "edit query"),
+		),
+		Refresh: key.NewBinding(
+			key.WithKeys("r"),
+			key.WithHelp("r", "refresh"),
+		),
+		RefreshAll: key.NewBinding(
+			key.WithKeys("R"),
+			key.WithHelp("R", "refresh all"),
+		),
+		Help: key.NewBinding(
+			key.WithKeys("?"),
+			key.WithHelp("?", "help"),
+		),
+		Quit: key.NewBinding(
+			key.WithKeys("q", "ctrl+c"),
+			key.WithHelp("q", "quit"),
+		),
+	}
+}
+
 type Model struct {
 	sections            []sectionModel
 	activeSectionIdx    int
@@ -87,6 +190,8 @@ type Model struct {
 	movingSprint        bool
 	sprintList          list.Model
 	sprintIssueKey      string
+	help                help.Model
+	keys                keyMap
 }
 
 type sectionModel struct {
@@ -94,6 +199,7 @@ type sectionModel struct {
 	table   table.Model
 	issues  []*jiraClient.EnrichedIssue
 	loading bool
+	loaded  bool     // Has this section been loaded at least once?
 	err     error
 	layout  []string // Column layout for this section
 }
@@ -143,12 +249,15 @@ func NewModel(client *jiraClient.Client, appCfg *config.AppConfig) Model {
 		sections[i] = newSectionModel(secCfg, layout)
 	}
 
+	keys := newKeyMap()
 	m := Model{
 		sections:         sections,
 		activeSectionIdx: 0,
 		client:           client,
 		serverURL:        appCfg.JiraCfg.Server,
 		projectKey:       appCfg.ProjectKey,
+		help:             help.New(),
+		keys:             keys,
 	}
 
 	return m
@@ -245,10 +354,12 @@ func buildColumnsFromLayout(layout []string) []table.Column {
 }
 
 func (m Model) Init() tea.Cmd {
-	// Fetch all sections in parallel
-	cmds := make([]tea.Cmd, len(m.sections))
+	// Fetch all sections in parallel, except lazy ones
+	cmds := make([]tea.Cmd, 0, len(m.sections))
 	for i := range m.sections {
-		cmds[i] = m.fetchSectionIssues(i)
+		if !m.sections[i].config.Lazy {
+			cmds = append(cmds, m.fetchSectionIssues(i))
+		}
 	}
 	return tea.Batch(cmds...)
 }
@@ -349,6 +460,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.help.SetWidth(msg.Width)
 
 		// Table gets ~60% of height, detail pane gets rest
 		// Account for section tabs (2 lines) + borders
@@ -480,6 +592,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 
+		case "?":
+			// Toggle help
+			m.help.ShowAll = !m.help.ShowAll
+			return m, nil
+
 		case "/":
 			// Enter query editing mode
 			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
@@ -555,6 +672,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Previous section
 			if m.activeSectionIdx > 0 {
 				m.activeSectionIdx--
+				// Lazy load if this is the first visit
+				newSection := m.sections[m.activeSectionIdx]
+				if newSection.config.Lazy && !newSection.loaded {
+					m.sections[m.activeSectionIdx].loading = true
+					return m, m.fetchSectionIssues(m.activeSectionIdx)
+				}
 			}
 			return m, nil
 
@@ -562,6 +685,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Next section
 			if m.activeSectionIdx < len(m.sections)-1 {
 				m.activeSectionIdx++
+				// Lazy load if this is the first visit
+				newSection := m.sections[m.activeSectionIdx]
+				if newSection.config.Lazy && !newSection.loaded {
+					m.sections[m.activeSectionIdx].loading = true
+					return m, m.fetchSectionIssues(m.activeSectionIdx)
+				}
 			}
 			return m, nil
 
@@ -572,11 +701,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "O":
 			// Open browser to create new issue
 			return m, m.openCreateIssueInBrowser()
+
+		case "r":
+			// Refresh current section
+			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+				m.sections[m.activeSectionIdx].loading = true
+				return m, m.fetchSectionIssues(m.activeSectionIdx)
+			}
+			return m, nil
+
+		case "R":
+			// Refresh all sections
+			cmds := make([]tea.Cmd, 0, len(m.sections))
+			for i := range m.sections {
+				m.sections[i].loading = true
+				cmds = append(cmds, m.fetchSectionIssues(i))
+			}
+			return m, tea.Batch(cmds...)
 		}
 
 	case sectionIssuesLoadedMsg:
 		if msg.sectionIdx >= 0 && msg.sectionIdx < len(m.sections) {
 			m.sections[msg.sectionIdx].loading = false
+			m.sections[msg.sectionIdx].loaded = true
 			if msg.err != nil {
 				m.sections[msg.sectionIdx].err = msg.err
 			} else {
@@ -738,8 +885,8 @@ func (m Model) renderTabs() string {
 		// Show text input for editing
 		queryLine = "\n  " + m.queryInput.View()
 	} else {
-		// Normal mode hints
-		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  /: edit query  c: comment  s: status  m: move to sprint  o: open in browser  q: quit")
+		// Normal mode: show help
+		hint = "  " + m.help.View(m.keys)
 
 		// Show current section's query (read-only)
 		if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {

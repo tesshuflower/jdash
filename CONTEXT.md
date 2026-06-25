@@ -181,7 +181,10 @@ sections:
     filters: assignee = currentUser() AND sprint is EMPTY AND resolution = Unresolved
   - title: Team Sprint (ACM)
     filters: sprint in openSprints() AND component = "ACM"
+    lazy: true  # Don't load until user switches to this section
 ```
+
+**Lazy loading:** Add `lazy: true` to a section to defer loading its issues until the user first navigates to that tab. Useful for expensive queries or sections you rarely visit. Default is `false` (load all sections on startup).
 
 **Why no "team" view by default?** Jira teams organize differently (by component, project, board, or labels). A generic `sprint in openSprints()` returns too much noise across all accessible projects. Users add team-scoped sections in their config once they know their organization's structure.
 
