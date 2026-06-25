@@ -111,3 +111,8 @@ func (c *Client) SearchIssues(jql string, limit uint) ([]*EnrichedIssue, error) 
 
 	return enriched, nil
 }
+
+// AddComment adds a comment to an issue
+func (c *Client) AddComment(key, comment string) error {
+	return c.client.AddIssueComment(key, comment, false)
+}

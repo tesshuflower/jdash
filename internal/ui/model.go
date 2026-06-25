@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -52,6 +53,8 @@ type Model struct {
 	height           int
 	editing          bool
 	queryInput       textinput.Model
+	commenting       bool
+	commentInput     textarea.Model
 }
 
 type sectionModel struct {
@@ -67,6 +70,11 @@ type sectionIssuesLoadedMsg struct {
 	sectionIdx int
 	issues     []*jiraClient.EnrichedIssue
 	err        error
+}
+
+type commentAddedMsg struct {
+	issueKey string
+	err      error
 }
 
 func NewModel(client *jiraClient.Client, appCfg *config.AppConfig) Model {
@@ -203,6 +211,32 @@ func (m Model) fetchSectionIssues(sectionIdx int) tea.Cmd {
 	}
 }
 
+func (m Model) addComment(comment string) tea.Cmd {
+	return func() tea.Msg {
+		// Get the selected issue
+		if m.activeSectionIdx < 0 || m.activeSectionIdx >= len(m.sections) {
+			return commentAddedMsg{err: fmt.Errorf("no active section")}
+		}
+
+		activeSection := m.sections[m.activeSectionIdx]
+		if len(activeSection.issues) == 0 {
+			return commentAddedMsg{err: fmt.Errorf("no issues")}
+		}
+
+		cursor := activeSection.table.Cursor()
+		if cursor < 0 || cursor >= len(activeSection.issues) {
+			return commentAddedMsg{err: fmt.Errorf("invalid cursor")}
+		}
+
+		issue := activeSection.issues[cursor]
+		err := m.client.AddComment(issue.Key, comment)
+		return commentAddedMsg{
+			issueKey: issue.Key,
+			err:      err,
+		}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -243,6 +277,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Handle commenting mode keys
+		if m.commenting {
+			switch msg.String() {
+			case "ctrl+d":
+				// Submit comment
+				comment := m.commentInput.Value()
+				m.commenting = false
+				return m, m.addComment(comment)
+
+			case "esc":
+				// Cancel commenting
+				m.commenting = false
+				return m, nil
+
+			default:
+				// Forward all other keys to the textarea
+				m.commentInput, cmd = m.commentInput.Update(msg)
+				return m, cmd
+			}
+		}
+
 		// Normal mode keys
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -256,6 +311,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.queryInput.SetValue(m.sections[m.activeSectionIdx].config.Filters)
 				m.queryInput.Focus()
 				m.queryInput.SetWidth(m.width - 4)
+			}
+			return m, nil
+
+		case "c":
+			// Enter comment mode
+			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+				activeSection := m.sections[m.activeSectionIdx]
+				if len(activeSection.issues) > 0 {
+					m.commenting = true
+					m.commentInput = textarea.New()
+					m.commentInput.Focus()
+					m.commentInput.SetWidth(m.width - 8)
+					m.commentInput.SetHeight(10)
+				}
 			}
 			return m, nil
 
@@ -293,6 +362,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sections[msg.sectionIdx].table.SetRows(issuesToRows(msg.issues, m.sections[msg.sectionIdx].layout))
 			}
 		}
+		return m, nil
+
+	case commentAddedMsg:
+		// TODO: Show feedback to user (success/error)
+		// For now, just ignore - comment was added in background
 		return m, nil
 	}
 
@@ -372,7 +446,7 @@ func (m Model) renderTabs() string {
 		queryLine = "\n  " + m.queryInput.View()
 	} else {
 		// Normal mode hints
-		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  /: edit query  o: open in browser  q: quit")
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  /: edit query  c: comment  o: open in browser  q: quit")
 
 		// Show current section's query (read-only)
 		if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
@@ -441,6 +515,17 @@ func (m Model) renderDetailPane(section sectionModel) string {
 	}
 
 	issue := section.issues[section.table.Cursor()]
+
+	// If commenting, show the textarea instead of details
+	if m.commenting {
+		var commentView strings.Builder
+		commentView.WriteString(titleStyle.Render(fmt.Sprintf("Add Comment to %s", issue.Key)))
+		commentView.WriteString("\n\n")
+		commentView.WriteString(m.commentInput.View())
+		commentView.WriteString("\n\n")
+		commentView.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Ctrl+D: submit  Esc: cancel"))
+		return detailStyle.Width(m.width - 4).Render(commentView.String())
+	}
 
 	// Build detail content
 	var details strings.Builder
