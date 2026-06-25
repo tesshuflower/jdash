@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
@@ -43,32 +44,30 @@ var (
 				Background(lipgloss.Color("57")).
 				Bold(true)
 
-	// Selector styles (gh-dash style)
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57")).Bold(true)
-	normalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	hintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 )
 
-// renderSelectorList renders a compact selector list (gh-dash style)
-func renderSelectorList(title string, items []string, cursor int) string {
-	var view strings.Builder
-	view.WriteString(titleStyle.Render(title))
-	view.WriteString("\n\n")
-
-	for i, item := range items {
-		var line string
-		if i == cursor {
-			line = selectedStyle.Render(fmt.Sprintf("> %s", item))
-		} else {
-			line = normalStyle.Render(fmt.Sprintf("  %s", item))
-		}
-		view.WriteString(line + "\n")
-	}
-
-	view.WriteString("\n")
-	view.WriteString(hintStyle.Render("j/k: navigate  Enter: select  Esc: cancel"))
-	return view.String()
+// transitionItem wraps a jira.Transition for the list component
+type transitionItem struct {
+	transition *jira.Transition
 }
+
+func (i transitionItem) Title() string       { return i.transition.Name }
+func (i transitionItem) Description() string { return "" }
+func (i transitionItem) FilterValue() string { return i.transition.Name }
+
+// sprintItem wraps a jira.Sprint for the list component
+type sprintItem struct {
+	sprint *jira.Sprint
+}
+
+func (i sprintItem) Title() string {
+	if i.sprint.BoardID > 0 {
+		return fmt.Sprintf("%s (%s) [board:%d]", i.sprint.Name, i.sprint.Status, i.sprint.BoardID)
+	}
+	return fmt.Sprintf("%s (%s)", i.sprint.Name, i.sprint.Status)
+}
+func (i sprintItem) Description() string { return "" }
+func (i sprintItem) FilterValue() string { return i.sprint.Name }
 
 type Model struct {
 	sections            []sectionModel
@@ -83,12 +82,10 @@ type Model struct {
 	commenting          bool
 	commentInput        textarea.Model
 	transitioning       bool
-	transitions         []*jira.Transition
-	transitionCursor    int
+	transitionList      list.Model
 	transitionIssueKey  string
 	movingSprint        bool
-	sprints             []*jira.Sprint
-	sprintCursor        int
+	sprintList          list.Model
 	sprintIssueKey      string
 }
 
@@ -410,32 +407,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.transitioning {
 			switch msg.String() {
 			case "enter":
-				// Execute selected transition
-				if m.transitionCursor >= 0 && m.transitionCursor < len(m.transitions) {
-					selectedTransition := m.transitions[m.transitionCursor]
-					m.transitioning = false
-					return m, m.transitionIssue(selectedTransition)
+				// Only select if NOT filtering - let list handle enter while filtering
+				if m.transitionList.FilterState() != list.Filtering {
+					if item, ok := m.transitionList.SelectedItem().(transitionItem); ok {
+						m.transitioning = false
+						return m, m.transitionIssue(item.transition)
+					}
+				} else {
+					// Filtering - forward enter to list to exit filter mode
+					var cmd tea.Cmd
+					m.transitionList, cmd = m.transitionList.Update(msg)
+					return m, cmd
 				}
 				return m, nil
 
 			case "esc":
-				// Cancel transition
+				// If filtering, let list handle esc (clears filter), otherwise cancel
+				if m.transitionList.FilterState() == list.Filtering {
+					var cmd tea.Cmd
+					m.transitionList, cmd = m.transitionList.Update(msg)
+					return m, cmd
+				}
 				m.transitioning = false
 				return m, nil
 
-			case "j", "down":
-				// Move cursor down
-				if m.transitionCursor < len(m.transitions)-1 {
-					m.transitionCursor++
-				}
-				return m, nil
-
-			case "k", "up":
-				// Move cursor up
-				if m.transitionCursor > 0 {
-					m.transitionCursor--
-				}
-				return m, nil
+			default:
+				// Forward all other keys to list (handles j/k, filtering, etc)
+				var cmd tea.Cmd
+				m.transitionList, cmd = m.transitionList.Update(msg)
+				return m, cmd
 			}
 		}
 
@@ -443,32 +443,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.movingSprint {
 			switch msg.String() {
 			case "enter":
-				// Execute selected sprint move
-				if m.sprintCursor >= 0 && m.sprintCursor < len(m.sprints) {
-					selectedSprint := m.sprints[m.sprintCursor]
-					m.movingSprint = false
-					return m, m.moveToSprint(selectedSprint)
+				// Only select if NOT filtering - let list handle enter while filtering
+				if m.sprintList.FilterState() != list.Filtering {
+					if item, ok := m.sprintList.SelectedItem().(sprintItem); ok {
+						m.movingSprint = false
+						return m, m.moveToSprint(item.sprint)
+					}
+				} else {
+					// Filtering - forward enter to list to exit filter mode
+					var cmd tea.Cmd
+					m.sprintList, cmd = m.sprintList.Update(msg)
+					return m, cmd
 				}
 				return m, nil
 
 			case "esc":
-				// Cancel sprint move
+				// If filtering, let list handle esc (clears filter), otherwise cancel
+				if m.sprintList.FilterState() == list.Filtering {
+					var cmd tea.Cmd
+					m.sprintList, cmd = m.sprintList.Update(msg)
+					return m, cmd
+				}
 				m.movingSprint = false
 				return m, nil
 
-			case "j", "down":
-				// Move cursor down
-				if m.sprintCursor < len(m.sprints)-1 {
-					m.sprintCursor++
-				}
-				return m, nil
-
-			case "k", "up":
-				// Move cursor up
-				if m.sprintCursor > 0 {
-					m.sprintCursor--
-				}
-				return m, nil
+			default:
+				// Forward all other keys to list (handles j/k, filtering, etc)
+				var cmd tea.Cmd
+				m.sprintList, cmd = m.sprintList.Update(msg)
+				return m, cmd
 			}
 		}
 
@@ -524,6 +527,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cursor := activeSection.table.Cursor()
 					if cursor >= 0 && cursor < len(activeSection.issues) {
 						issue := activeSection.issues[cursor]
+
+						// Create empty list with loading message immediately
+						delegate := list.NewDefaultDelegate()
+						delegate.ShowDescription = false
+						delegate.SetSpacing(0)
+						// Calculate available height: detail pane gets ~40% of screen minus borders/padding
+						detailHeight := (m.height * 4) / 10
+						listHeight := detailHeight - 8 // Account for borders and padding
+						if listHeight < 5 {
+							listHeight = 5 // Minimum height
+						}
+						m.sprintList = list.New([]list.Item{}, delegate, m.width-8, listHeight)
+						m.sprintList.Title = fmt.Sprintf("Move to Sprint - %s (Loading...)", issue.Key)
+						m.sprintList.SetShowHelp(false)
+						m.sprintIssueKey = issue.Key
+						m.movingSprint = true
+
+						// Fetch sprints in background
 						return m, m.fetchSprints(issue.Key, issue.BoardID)
 					}
 				}
@@ -576,9 +597,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// TODO: Show error to user
 			return m, nil
 		}
-		// Store transitions and reset cursor
-		m.transitions = msg.transitions
-		m.transitionCursor = 0
+		// Create list items
+		items := make([]list.Item, len(msg.transitions))
+		for i, t := range msg.transitions {
+			items[i] = transitionItem{transition: t}
+		}
+		// Create compact list delegate
+		delegate := list.NewDefaultDelegate()
+		delegate.ShowDescription = false
+		delegate.SetSpacing(0)
+		// Calculate available height: detail pane gets ~40% of screen minus borders/padding
+		detailHeight := (m.height * 4) / 10
+		listHeight := detailHeight - 8 // Account for borders and padding
+		if listHeight < 5 {
+			listHeight = 5 // Minimum height
+		}
+		// Create list
+		m.transitionList = list.New(items, delegate, m.width-8, listHeight)
+		m.transitionList.Title = fmt.Sprintf("Change Status - %s", msg.issueKey)
+		m.transitionList.SetShowHelp(false)
 		m.transitionIssueKey = msg.issueKey
 		m.transitioning = true
 		return m, nil
@@ -593,14 +630,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sprintsLoadedMsg:
 		if msg.err != nil {
-			// TODO: Show error to user
+			// Update title to show error
+			m.sprintList.Title = fmt.Sprintf("Move to Sprint - %s (Error: %v)", msg.issueKey, msg.err)
 			return m, nil
 		}
-		// Store sprints and reset cursor
-		m.sprints = msg.sprints
-		m.sprintCursor = 0
-		m.sprintIssueKey = msg.issueKey
-		m.movingSprint = true
+		// Update existing list with loaded items
+		items := make([]list.Item, len(msg.sprints))
+		for i, s := range msg.sprints {
+			items[i] = sprintItem{sprint: s}
+		}
+		m.sprintList.SetItems(items)
+		m.sprintList.Title = fmt.Sprintf("Move to Sprint - %s", msg.issueKey)
 		return m, nil
 
 	case sprintMoveMsg:
@@ -610,6 +650,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// TODO: Show error to user
 		return m, nil
+	}
+
+	// Forward unhandled messages to active components
+	if m.transitioning {
+		m.transitionList, cmd = m.transitionList.Update(msg)
+		return m, cmd
+	}
+
+	if m.movingSprint {
+		m.sprintList, cmd = m.sprintList.Update(msg)
+		return m, cmd
 	}
 
 	// Update the active section's table
@@ -771,29 +822,12 @@ func (m Model) renderDetailPane(section sectionModel) string {
 
 	// If transitioning, show the transition list instead of details
 	if m.transitioning {
-		items := make([]string, len(m.transitions))
-		for i, t := range m.transitions {
-			items[i] = t.Name
-		}
-		return detailStyle.Width(m.width - 4).Render(
-			renderSelectorList(fmt.Sprintf("Change Status - %s", issue.Key), items, m.transitionCursor),
-		)
+		return detailStyle.Width(m.width - 4).Render(m.transitionList.View())
 	}
 
 	// If moving sprint, show the sprint list instead of details
 	if m.movingSprint {
-		items := make([]string, len(m.sprints))
-		for i, s := range m.sprints {
-			// Show board ID if available (helps when showing sprints from multiple boards)
-			if s.BoardID > 0 {
-				items[i] = fmt.Sprintf("%s (%s) [board:%d]", s.Name, s.Status, s.BoardID)
-			} else {
-				items[i] = fmt.Sprintf("%s (%s)", s.Name, s.Status)
-			}
-		}
-		return detailStyle.Width(m.width - 4).Render(
-			renderSelectorList(fmt.Sprintf("Move to Sprint - %s", issue.Key), items, m.sprintCursor),
-		)
+		return detailStyle.Width(m.width - 4).Render(m.sprintList.View())
 	}
 
 	// Build detail content
