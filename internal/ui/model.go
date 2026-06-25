@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ankitpokhrel/jira-cli/pkg/browser"
@@ -49,6 +50,8 @@ type Model struct {
 	projectKey       string
 	width            int
 	height           int
+	editing          bool
+	queryInput       textinput.Model
 }
 
 type sectionModel struct {
@@ -217,9 +220,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyPressMsg:
+		// Handle editing mode keys first
+		if m.editing {
+			switch msg.String() {
+			case "enter":
+				// Apply the edited query
+				newQuery := m.queryInput.Value()
+				m.sections[m.activeSectionIdx].config.Filters = newQuery
+				m.sections[m.activeSectionIdx].loading = true
+				m.editing = false
+				return m, m.fetchSectionIssues(m.activeSectionIdx)
+
+			case "esc":
+				// Cancel editing
+				m.editing = false
+				return m, nil
+
+			default:
+				// Forward all other keys to the text input
+				m.queryInput, cmd = m.queryInput.Update(msg)
+				return m, cmd
+			}
+		}
+
+		// Normal mode keys
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+
+		case "/":
+			// Enter query editing mode
+			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+				m.editing = true
+				m.queryInput = textinput.New()
+				m.queryInput.SetValue(m.sections[m.activeSectionIdx].config.Filters)
+				m.queryInput.Focus()
+				m.queryInput.SetWidth(m.width - 4)
+			}
+			return m, nil
 
 		case "h", "left", "shift+tab":
 			// Previous section
@@ -323,21 +361,32 @@ func (m Model) renderTabs() string {
 		tabs = append(tabs, style.Render(section.config.Title))
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  o: open in browser  q: quit")
 
-	// Show current section's query
+	var hint string
 	var queryLine string
-	if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
-		activeSection := m.sections[m.activeSectionIdx]
-		queryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
 
-		// Truncate query if too long
-		query := activeSection.config.Filters
-		maxWidth := m.width - 10
-		if maxWidth > 0 && len(query) > maxWidth {
-			query = query[:maxWidth-3] + "..."
+	if m.editing {
+		// Editing mode hints
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: apply  Esc: cancel")
+		// Show text input for editing
+		queryLine = "\n  " + m.queryInput.View()
+	} else {
+		// Normal mode hints
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  h/l: switch sections  j/k: navigate  /: edit query  o: open in browser  q: quit")
+
+		// Show current section's query (read-only)
+		if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+			activeSection := m.sections[m.activeSectionIdx]
+			queryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
+
+			// Truncate query if too long
+			query := activeSection.config.Filters
+			maxWidth := m.width - 10
+			if maxWidth > 0 && len(query) > maxWidth {
+				query = query[:maxWidth-3] + "..."
+			}
+			queryLine = "\n" + queryStyle.Render("  "+query)
 		}
-		queryLine = "\n" + queryStyle.Render("  "+query)
 	}
 
 	return tabBar + hint + queryLine + "\n"
