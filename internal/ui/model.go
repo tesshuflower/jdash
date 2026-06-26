@@ -515,19 +515,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle filtering mode keys
 		if m.filtering {
 			switch msg.String() {
-			case "enter", "esc":
-				// Exit filter mode but keep the filter applied (enter) or clear it (esc)
-				if msg.String() == "esc" {
-					m.filterText = ""
-					// Restore full issue list to table
-					if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
-						section := m.sections[m.activeSectionIdx]
-						m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(section.issues, section.layout))
-					}
-				} else {
-					m.filterText = m.filterInput.Value()
-				}
+			case "enter":
+				// Apply filter and return to normal navigation
+				m.filterText = m.filterInput.Value()
 				m.filtering = false
+				return m, nil
+
+			case "esc":
+				// Cancel — revert to previous filter state (empty if no prior filter)
+				m.filtering = false
+				// Restore table to match the previous filterText (which may be empty)
+				if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+					section := m.sections[m.activeSectionIdx]
+					filtered := filterIssues(section.issues, section.layout, m.filterText)
+					m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(filtered, section.layout))
+				}
 				return m, nil
 
 			default:
@@ -641,6 +643,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+
+		case "esc":
+			// Clear active filter
+			if m.filterText != "" {
+				m.filterText = ""
+				if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+					section := m.sections[m.activeSectionIdx]
+					m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(section.issues, section.layout))
+				}
+			}
+			return m, nil
 
 		case "?":
 			// Toggle help
@@ -999,7 +1012,7 @@ func (m Model) renderTabs() string {
 			// Show active filter indicator below the query
 			if m.filterText != "" {
 				filterIndicator := lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Render(
-					fmt.Sprintf("  Filter: %s (/ to edit, esc to clear)", m.filterText))
+					fmt.Sprintf("  Filter: %s (esc to clear)", m.filterText))
 				queryLine += "\n" + filterIndicator
 			}
 		}
