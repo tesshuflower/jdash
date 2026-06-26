@@ -1,3 +1,4 @@
+// Package main is the entry point for jdash, a terminal UI for Jira.
 package main
 
 import (

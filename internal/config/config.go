@@ -1,3 +1,4 @@
+// Package config handles loading jira-cli and jdash configuration for jdash.
 package config
 
 import (
