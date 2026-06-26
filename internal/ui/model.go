@@ -46,6 +46,15 @@ var (
 				Background(lipgloss.Color("57")).
 				Bold(true)
 
+	searchBarStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("63")).
+				Padding(0, 1)
+
+	searchBarEditingStyle = lipgloss.NewStyle().
+					BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("170")).
+					Padding(0, 1)
 )
 
 // transitionItem wraps a jira.Transition for the list component
@@ -882,24 +891,33 @@ func (m Model) renderTabs() string {
 	if m.editing {
 		// Editing mode hints
 		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: apply  Esc: cancel")
-		// Show text input for editing
-		queryLine = "\n  " + m.queryInput.View()
+		// Show text input in a bordered box
+		boxWidth := m.width - 6
+		if boxWidth < 20 {
+			boxWidth = 20
+		}
+		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(m.queryInput.View())
 	} else {
 		// Normal mode: show help
 		hint = "  " + m.help.View(m.keys)
 
-		// Show current section's query (read-only)
+		// Show current section's query in a bordered box (read-only)
 		if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
 			activeSection := m.sections[m.activeSectionIdx]
 			queryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
 
-			// Truncate query if too long
+			// Truncate query if too long (account for box padding/borders)
 			query := activeSection.config.Filters
-			maxWidth := m.width - 10
+			maxWidth := m.width - 12
 			if maxWidth > 0 && len(query) > maxWidth {
 				query = query[:maxWidth-3] + "..."
 			}
-			queryLine = "\n" + queryStyle.Render("  "+query)
+
+			boxWidth := m.width - 6
+			if boxWidth < 20 {
+				boxWidth = 20
+			}
+			queryLine = "\n" + searchBarStyle.Width(boxWidth).Render(queryStyle.Render(query))
 		}
 	}
 
