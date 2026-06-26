@@ -988,8 +988,10 @@ func (m Model) renderTabs() string {
 		filterLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true).Render("/") + " "
 		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(filterLabel + m.filterInput.View())
 	} else {
-		// Normal mode: show help
-		hint = "  " + m.help.View(m.keys)
+		// Normal mode: show short help hint inline
+		if !m.help.ShowAll {
+			hint = "  " + m.help.View(m.keys)
+		}
 
 		// Show current section's query in a bordered box (read-only)
 		if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
@@ -1018,7 +1020,12 @@ func (m Model) renderTabs() string {
 		}
 	}
 
-	return tabBar + hint + queryLine + "\n"
+	var helpLine string
+	if m.help.ShowAll {
+		helpLine = "\n" + m.help.View(m.keys)
+	}
+
+	return tabBar + hint + queryLine + helpLine + "\n"
 }
 
 // openSelectedIssueInBrowser opens the currently selected issue in the default browser
