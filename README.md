@@ -15,7 +15,8 @@ A terminal user interface (TUI) for Jira, inspired by [gh-dash](https://github.c
 - Change status (press `s`)
 - Move to sprint (press `m`) with fuzzy filtering
 - Open in browser (press `o`)
-- Edit queries on the fly (press `/`)
+- Local fuzzy filter (press `/`) — instantly filter visible issues
+- Edit queries on the fly (press `e`)
 - Refresh sections (press `r` for current, `R` for all)
 
 **Configuration**
@@ -120,8 +121,11 @@ Press `?` to see all keybindings. Common keys:
 - `o` — Open issue in browser
 - `O` — Open browser to create new issue
 
+**Filter & Search**
+- `/` — Fuzzy filter issues in current section (matches all visible columns)
+- `e` — Edit JQL query for current section (temporary, not saved)
+
 **Other**
-- `/` — Edit query for current section (temporary, not saved)
 - `r` — Refresh current section
 - `R` — Refresh all sections
 - `?` — Toggle help
