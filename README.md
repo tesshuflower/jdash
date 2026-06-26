@@ -55,11 +55,11 @@ git clone https://github.com/tesshuflower/jdash.git
 cd jdash
 
 # Build
-go build -o jdash
+make build
+```
 
 # Run
-./jdash
-```
+Run with `make run` or `./jdash`.
 
 On first run, jdash will create `~/.config/jdash/config.yaml` with working defaults.
 
@@ -154,6 +154,36 @@ Press `/` while in the sprint selector to filter the list, then `j`/`k` to navig
 **"currentUser() doesn't work"**
 - Some Jira instances don't support `currentUser()` in JQL
 - The auto-generated config uses your actual email instead
+
+## Development
+
+### Make targets
+
+| Target | Description |
+|---|---|
+| `make build` | Compile the binary (`./jdash`) |
+| `make run` | Run without building a binary (`go run .`) |
+| `make test` | Run all tests (`go test ./...`) |
+| `make lint` | Install golangci-lint (if needed) and run it |
+| `make clean` | Remove the binary and `./bin/` directory |
+
+### Linting
+
+`make lint` installs golangci-lint into `./bin/` at the version pinned in the Makefile. Subsequent runs reuse the cached binary — no reinstall until you run `make clean`.
+
+To upgrade or change the golangci-lint version, clean first:
+
+```bash
+make clean
+GOLANGCI_LINT_VERSION=v2.11.0 make lint
+```
+
+### Dependency updates
+
+[Renovate](https://docs.renovatebot.com/) is configured to open PRs for:
+- Go module updates (`go.mod`)
+- GitHub Actions version updates
+- golangci-lint version updates (via the Makefile annotation)
 
 ## Documentation
 
