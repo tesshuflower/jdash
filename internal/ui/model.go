@@ -10,6 +10,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ankitpokhrel/jira-cli/pkg/browser"
@@ -52,9 +53,12 @@ var (
 				Padding(0, 1)
 
 	searchBarEditingStyle = lipgloss.NewStyle().
-					BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("170")).
-					Padding(0, 1)
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("170")).
+				Padding(0, 1)
+
+	detailHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
 )
 
 // transitionItem wraps a jira.Transition for the list component
@@ -88,6 +92,7 @@ type keyMap struct {
 	Navigate          key.Binding
 	FirstItem         key.Binding
 	LastItem          key.Binding
+	EnterDetail       key.Binding
 
 	// Actions
 	Comment       key.Binding
@@ -111,7 +116,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.SwitchSectionNext, k.SwitchSectionPrev, k.Navigate, k.FirstItem, k.LastItem},
+		{k.SwitchSectionNext, k.SwitchSectionPrev, k.Navigate, k.FirstItem, k.LastItem, k.EnterDetail},
 		{k.Comment, k.ChangeStatus, k.MoveToSprint, k.OpenBrowser, k.CreateIssue},
 		{k.Filter, k.EditQuery, k.Refresh, k.RefreshAll, k.Help, k.Quit},
 	}
@@ -138,6 +143,10 @@ func newKeyMap() keyMap {
 		LastItem: key.NewBinding(
 			key.WithKeys("G"),
 			key.WithHelp("G", "last"),
+		),
+		EnterDetail: key.NewBinding(
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "detail view"),
 		),
 		Comment: key.NewBinding(
 			key.WithKeys("c"),
@@ -209,6 +218,8 @@ type Model struct {
 	sprintIssueKey      string
 	help                help.Model
 	keys                keyMap
+	focusDetail         bool
+	detailViewport      viewport.Model
 }
 
 type sectionModel struct {
@@ -488,7 +499,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sections[i].table.SetWidth(m.width - 4)
 		}
 
+		// Keep viewport sized to full screen (minus title + hint lines)
+		if m.focusDetail {
+			m.detailViewport.SetWidth(m.width - 8)
+			m.detailViewport.SetHeight(m.height - 8)
+		}
+
 	case tea.KeyPressMsg:
+		// Handle detail focus mode — before all other modes
+		if m.focusDetail {
+			switch msg.String() {
+			case "esc":
+				m.focusDetail = false
+				return m, nil
+			case "g":
+				m.detailViewport.GotoTop()
+				return m, nil
+			case "G":
+				m.detailViewport.GotoBottom()
+				return m, nil
+			case "j", "k", "up", "down", "pgup", "pgdown", "ctrl+u", "ctrl+d":
+				m.detailViewport, cmd = m.detailViewport.Update(msg)
+				return m, cmd
+			default:
+				// Exit detail mode and fall through to normal key handling
+				m.focusDetail = false
+			}
+		}
+
 		// Handle editing mode keys first
 		if m.editing {
 			switch msg.String() {
@@ -807,6 +845,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.fetchSectionIssues(i))
 			}
 			return m, tea.Batch(cmds...)
+
+		case "enter":
+			// Open full-screen detail view for the selected issue
+			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+				activeSection := m.sections[m.activeSectionIdx]
+				visible := m.visibleIssues(activeSection)
+				cursor := activeSection.table.Cursor()
+				if len(visible) > 0 && cursor >= 0 && cursor < len(visible) {
+					issue := visible[cursor]
+					wrapWidth := m.width - 4
+					if wrapWidth < 20 {
+						wrapWidth = 20
+					}
+					content := buildDetailContent(issue, wrapWidth)
+					vp := viewport.New(viewport.WithWidth(m.width-8), viewport.WithHeight(m.height-8))
+					vp.SetContent(content)
+					m.detailViewport = vp
+					m.focusDetail = true
+				}
+			}
+			return m, nil
 		}
 
 	case sectionIssuesLoadedMsg:
@@ -889,6 +948,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward unhandled messages to active components
+	if m.focusDetail {
+		m.detailViewport, cmd = m.detailViewport.Update(msg)
+		return m, cmd
+	}
+
 	if m.transitioning {
 		m.transitionList, cmd = m.transitionList.Update(msg)
 		return m, cmd
@@ -909,6 +973,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() tea.View {
 	var content string
+
+	// Full-screen detail view
+	if m.focusDetail {
+		if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+			activeSection := m.sections[m.activeSectionIdx]
+			visible := m.visibleIssues(activeSection)
+			cursor := activeSection.table.Cursor()
+			if len(visible) > 0 && cursor >= 0 && cursor < len(visible) {
+				issue := visible[cursor]
+				title := titleStyle.Render(fmt.Sprintf("%s: %s", issue.Key, issue.Fields.Summary))
+				hint := detailHintStyle.Render("Esc: back  j/k: scroll  g/G: top/bottom  ctrl+u/d: half page")
+				inner := title + "\n\n" + m.detailViewport.View() + "\n\n" + hint
+				content = detailStyle.Width(m.width - 4).Render(inner)
+			}
+		}
+		v := tea.NewView(content)
+		v.AltScreen = true
+		return v
+	}
 
 	// Render section tabs
 	tabs := m.renderTabs()
@@ -1101,11 +1184,19 @@ func (m Model) renderDetailPane(section sectionModel) string {
 		return detailStyle.Width(m.width - 4).Render(m.sprintList.View())
 	}
 
-	// Build detail content
-	var details strings.Builder
-	details.WriteString(titleStyle.Render(fmt.Sprintf("%s: %s", issue.Key, issue.Fields.Summary)))
-	details.WriteString("\n\n")
+	// Word-wrap to fit pane width (subtract borders + padding)
+	wrapWidth := m.width - 8
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	header := titleStyle.Render(fmt.Sprintf("%s: %s", issue.Key, issue.Fields.Summary)) + "\n\n"
+	return detailStyle.Width(m.width - 4).Render(header + buildDetailContent(issue, wrapWidth))
+}
 
+// buildDetailContent builds the scrollable body text for the detail view of an issue.
+// The title line is NOT included here — callers render it separately.
+func buildDetailContent(issue *jiraClient.EnrichedIssue, wrapWidth int) string {
+	var details strings.Builder
 	details.WriteString(fmt.Sprintf("Type:     %s\n", issue.Fields.IssueType.Name))
 	details.WriteString(fmt.Sprintf("Status:   %s\n", issue.Fields.Status.Name))
 
@@ -1130,17 +1221,12 @@ func (m Model) renderDetailPane(section sectionModel) string {
 		details.WriteString("\n")
 		desc := extractDescriptionText(issue.Fields.Description)
 		if desc != "" {
-			// Word-wrap to fit pane width (subtract borders + padding)
-			wrapWidth := m.width - 8
-			if wrapWidth < 20 {
-				wrapWidth = 20
-			}
 			details.WriteString("Description:\n")
 			details.WriteString(wordWrap(desc, wrapWidth))
 		}
 	}
 
-	return detailStyle.Width(m.width - 4).Render(details.String())
+	return details.String()
 }
 
 func issuesToRows(issues []*jiraClient.EnrichedIssue, layout []string) []table.Row {
