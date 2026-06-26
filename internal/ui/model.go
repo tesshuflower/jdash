@@ -1128,13 +1128,15 @@ func (m Model) renderDetailPane(section sectionModel) string {
 	// Description (if present)
 	if issue.Fields.Description != nil {
 		details.WriteString("\n")
-		desc, ok := issue.Fields.Description.(string)
-		if ok && desc != "" {
-			// Truncate long descriptions
-			if len(desc) > 200 {
-				desc = desc[:200] + "..."
+		desc := extractDescriptionText(issue.Fields.Description)
+		if desc != "" {
+			// Word-wrap to fit pane width (subtract borders + padding)
+			wrapWidth := m.width - 8
+			if wrapWidth < 20 {
+				wrapWidth = 20
 			}
-			details.WriteString(fmt.Sprintf("Description:\n%s", desc))
+			details.WriteString("Description:\n")
+			details.WriteString(wordWrap(desc, wrapWidth))
 		}
 	}
 
@@ -1233,6 +1235,93 @@ func getIssueFieldValue(issue *jiraClient.EnrichedIssue, field string) string {
 		// Unknown field - return empty
 		return ""
 	}
+}
+
+// extractDescriptionText extracts plain text from a Jira description field.
+// Jira v2 (Server) returns a plain string; Jira v3 (Cloud) returns an ADF document
+// as a nested map[string]interface{}. This function handles both cases.
+func extractDescriptionText(desc interface{}) string {
+	// Jira Server (v2): description is a plain string
+	if s, ok := desc.(string); ok {
+		return s
+	}
+
+	// Jira Cloud (v3): description is an ADF document — walk the content tree
+	// and collect all text node values.
+	if adf, ok := desc.(map[string]interface{}); ok {
+		var sb strings.Builder
+		extractADFText(adf, &sb)
+		return strings.TrimSpace(sb.String())
+	}
+
+	return "[Open in browser to view description]"
+}
+
+// extractADFText recursively walks an ADF node and appends text to sb.
+func extractADFText(node map[string]interface{}, sb *strings.Builder) {
+	// If this node is a text node, grab its text value
+	if nodeType, ok := node["type"].(string); ok && nodeType == "text" {
+		if text, ok := node["text"].(string); ok {
+			sb.WriteString(text)
+		}
+		return
+	}
+
+	// Recurse into content children
+	if content, ok := node["content"].([]interface{}); ok {
+		for i, child := range content {
+			if childMap, ok := child.(map[string]interface{}); ok {
+				extractADFText(childMap, sb)
+			}
+			// Add a newline after block-level nodes (paragraphs, headings, etc.)
+			if i < len(content)-1 {
+				if nodeType, ok := node["type"].(string); ok {
+					switch nodeType {
+					case "paragraph", "heading", "bulletList", "orderedList", "listItem", "blockquote", "codeBlock":
+						sb.WriteString("\n")
+					}
+				}
+			}
+		}
+	}
+}
+
+// wordWrap wraps text to the given width, preserving existing newlines.
+func wordWrap(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	var result strings.Builder
+	for i, line := range strings.Split(text, "\n") {
+		if i > 0 {
+			result.WriteString("\n")
+		}
+		if len(line) <= width {
+			result.WriteString(line)
+			continue
+		}
+		// Wrap this line by words
+		words := strings.Fields(line)
+		if len(words) == 0 {
+			continue
+		}
+		col := 0
+		for wi, word := range words {
+			if wi == 0 {
+				result.WriteString(word)
+				col = len(word)
+			} else if col+1+len(word) > width {
+				result.WriteString("\n")
+				result.WriteString(word)
+				col = len(word)
+			} else {
+				result.WriteString(" ")
+				result.WriteString(word)
+				col += 1 + len(word)
+			}
+		}
+	}
+	return result.String()
 }
 
 // visibleIssues returns the currently displayed issues for a section (filtered if a filter is active)
