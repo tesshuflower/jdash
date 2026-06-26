@@ -518,7 +518,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "G":
 				m.detailViewport.GotoBottom()
 				return m, nil
-			case "j", "k", "up", "down", "pgup", "pgdown":
+			case "j", "k", "up", "down", "pgup", "pgdown", "ctrl+u", "ctrl+d":
 				m.detailViewport, cmd = m.detailViewport.Update(msg)
 				return m, cmd
 			default:
@@ -983,7 +983,7 @@ func (m Model) View() tea.View {
 			if len(visible) > 0 && cursor >= 0 && cursor < len(visible) {
 				issue := visible[cursor]
 				title := titleStyle.Render(fmt.Sprintf("%s: %s", issue.Key, issue.Fields.Summary))
-				hint := detailHintStyle.Render("Esc: back  j/k: scroll  g/G: top/bottom")
+				hint := detailHintStyle.Render("Esc: back  j/k: scroll  g/G: top/bottom  ctrl+u/d: half page")
 				inner := title + "\n\n" + m.detailViewport.View() + "\n\n" + hint
 				content = detailStyle.Width(m.width - 4).Render(inner)
 			}
