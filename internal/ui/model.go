@@ -565,13 +565,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "esc":
-				// Cancel — revert to previous filter state (empty if no prior filter)
+				// Cancel — clear filter
 				m.filtering = false
-				// Restore table to match the previous filterText (which may be empty)
+				m.filterText = ""
 				if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
 					section := m.sections[m.activeSectionIdx]
-					filtered := filterIssues(section.issues, section.layout, m.filterText)
-					m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(filtered, section.layout))
+					m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(section.issues, section.layout))
+				}
+				return m, nil
+
+			case "tab":
+				// Accept placeholder (previous filter) into input
+				if m.filterInput.Value() == "" && m.filterInput.Placeholder != "" {
+					m.filterInput.SetValue(m.filterInput.Placeholder)
+					m.filterText = m.filterInput.Value()
+					// Apply filter in real-time
+					if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+						section := m.sections[m.activeSectionIdx]
+						filtered := filterIssues(section.issues, section.layout, m.filterText)
+						m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(filtered, section.layout))
+					}
 				}
 				return m, nil
 
@@ -708,9 +721,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
 				m.filtering = true
 				m.filterInput = textinput.New()
-				m.filterInput.SetValue(m.filterText)
+				m.filterInput.Placeholder = m.filterText
 				m.filterInput.Focus()
 				m.filterInput.SetWidth(m.width - 10)
+				// Show all issues while filter input is empty
+				m.filterText = ""
+				section := m.sections[m.activeSectionIdx]
+				m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(section.issues, section.layout))
 			}
 			return m, nil
 
@@ -1070,7 +1087,7 @@ func (m Model) renderTabs() string {
 		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(m.queryInput.View())
 	case m.filtering:
 		// Filtering mode hints
-		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: keep filter  Esc: clear")
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: apply  Tab: use previous  Esc: clear")
 		// Show filter input in a bordered box
 		boxWidth := m.width - 6
 		if boxWidth < 20 {
