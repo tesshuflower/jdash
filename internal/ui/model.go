@@ -97,6 +97,7 @@ type keyMap struct {
 	CreateIssue   key.Binding
 
 	// Other
+	Filter      key.Binding
 	EditQuery   key.Binding
 	Refresh     key.Binding
 	RefreshAll  key.Binding
@@ -112,7 +113,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.SwitchSectionNext, k.SwitchSectionPrev, k.Navigate, k.FirstItem, k.LastItem},
 		{k.Comment, k.ChangeStatus, k.MoveToSprint, k.OpenBrowser, k.CreateIssue},
-		{k.EditQuery, k.Refresh, k.RefreshAll, k.Help, k.Quit},
+		{k.Filter, k.EditQuery, k.Refresh, k.RefreshAll, k.Help, k.Quit},
 	}
 }
 
@@ -158,9 +159,13 @@ func newKeyMap() keyMap {
 			key.WithKeys("O"),
 			key.WithHelp("O", "create issue"),
 		),
-		EditQuery: key.NewBinding(
+		Filter: key.NewBinding(
 			key.WithKeys("/"),
-			key.WithHelp("/", "edit query"),
+			key.WithHelp("/", "filter"),
+		),
+		EditQuery: key.NewBinding(
+			key.WithKeys("e"),
+			key.WithHelp("e", "edit query"),
 		),
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
@@ -191,6 +196,9 @@ type Model struct {
 	height              int
 	editing             bool
 	queryInput          textinput.Model
+	filtering           bool
+	filterInput         textinput.Model
+	filterText          string
 	commenting          bool
 	commentInput        textarea.Model
 	transitioning       bool
@@ -393,16 +401,17 @@ func (m Model) addComment(comment string) tea.Cmd {
 		}
 
 		activeSection := m.sections[m.activeSectionIdx]
-		if len(activeSection.issues) == 0 {
+		visible := m.visibleIssues(activeSection)
+		if len(visible) == 0 {
 			return commentAddedMsg{err: fmt.Errorf("no issues")}
 		}
 
 		cursor := activeSection.table.Cursor()
-		if cursor < 0 || cursor >= len(activeSection.issues) {
+		if cursor < 0 || cursor >= len(visible) {
 			return commentAddedMsg{err: fmt.Errorf("invalid cursor")}
 		}
 
-		issue := activeSection.issues[cursor]
+		issue := visible[cursor]
 		err := m.client.AddComment(issue.Key, comment)
 		return commentAddedMsg{
 			issueKey: issue.Key,
@@ -499,6 +508,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				// Forward all other keys to the text input
 				m.queryInput, cmd = m.queryInput.Update(msg)
+				return m, cmd
+			}
+		}
+
+		// Handle filtering mode keys
+		if m.filtering {
+			switch msg.String() {
+			case "enter", "esc":
+				// Exit filter mode but keep the filter applied (enter) or clear it (esc)
+				if msg.String() == "esc" {
+					m.filterText = ""
+					// Restore full issue list to table
+					if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+						section := m.sections[m.activeSectionIdx]
+						m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(section.issues, section.layout))
+					}
+				} else {
+					m.filterText = m.filterInput.Value()
+				}
+				m.filtering = false
+				return m, nil
+
+			default:
+				// Forward keys to text input and apply filter
+				m.filterInput, cmd = m.filterInput.Update(msg)
+				m.filterText = m.filterInput.Value()
+				// Apply filter in real-time
+				if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+					section := m.sections[m.activeSectionIdx]
+					filtered := filterIssues(section.issues, section.layout, m.filterText)
+					m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(filtered, section.layout))
+				}
 				return m, cmd
 			}
 		}
@@ -607,6 +648,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "/":
+			// Enter local filter mode
+			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+				m.filtering = true
+				m.filterInput = textinput.New()
+				m.filterInput.SetValue(m.filterText)
+				m.filterInput.Focus()
+				m.filterInput.SetWidth(m.width - 10)
+			}
+			return m, nil
+
+		case "e":
 			// Enter query editing mode
 			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
 				m.editing = true
@@ -621,7 +673,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Enter comment mode
 			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
 				activeSection := m.sections[m.activeSectionIdx]
-				if len(activeSection.issues) > 0 {
+				visible := m.visibleIssues(activeSection)
+				if len(visible) > 0 {
 					m.commenting = true
 					m.commentInput = textarea.New()
 					m.commentInput.Focus()
@@ -635,10 +688,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Enter status change mode
 			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
 				activeSection := m.sections[m.activeSectionIdx]
-				if len(activeSection.issues) > 0 {
+				visible := m.visibleIssues(activeSection)
+				if len(visible) > 0 {
 					cursor := activeSection.table.Cursor()
-					if cursor >= 0 && cursor < len(activeSection.issues) {
-						issue := activeSection.issues[cursor]
+					if cursor >= 0 && cursor < len(visible) {
+						issue := visible[cursor]
 						return m, m.fetchTransitions(issue.Key)
 					}
 				}
@@ -649,10 +703,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Enter sprint move mode
 			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
 				activeSection := m.sections[m.activeSectionIdx]
-				if len(activeSection.issues) > 0 {
+				visible := m.visibleIssues(activeSection)
+				if len(visible) > 0 {
 					cursor := activeSection.table.Cursor()
-					if cursor >= 0 && cursor < len(activeSection.issues) {
-						issue := activeSection.issues[cursor]
+					if cursor >= 0 && cursor < len(visible) {
+						issue := visible[cursor]
 
 						// Create empty list with loading message immediately
 						delegate := list.NewDefaultDelegate()
@@ -680,6 +735,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "h", "left", "shift+tab":
 			// Previous section
 			if m.activeSectionIdx > 0 {
+				// Clear filter when switching sections
+				if m.filterText != "" {
+					m.filterText = ""
+					section := m.sections[m.activeSectionIdx]
+					m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(section.issues, section.layout))
+				}
 				m.activeSectionIdx--
 				// Lazy load if this is the first visit
 				newSection := m.sections[m.activeSectionIdx]
@@ -693,6 +754,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "l", "right", "tab":
 			// Next section
 			if m.activeSectionIdx < len(m.sections)-1 {
+				// Clear filter when switching sections
+				if m.filterText != "" {
+					m.filterText = ""
+					section := m.sections[m.activeSectionIdx]
+					m.sections[m.activeSectionIdx].table.SetRows(issuesToRows(section.issues, section.layout))
+				}
 				m.activeSectionIdx++
 				// Lazy load if this is the first visit
 				newSection := m.sections[m.activeSectionIdx]
@@ -897,6 +964,16 @@ func (m Model) renderTabs() string {
 			boxWidth = 20
 		}
 		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(m.queryInput.View())
+	} else if m.filtering {
+		// Filtering mode hints
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: keep filter  Esc: clear")
+		// Show filter input in a bordered box
+		boxWidth := m.width - 6
+		if boxWidth < 20 {
+			boxWidth = 20
+		}
+		filterLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true).Render("/") + " "
+		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(filterLabel + m.filterInput.View())
 	} else {
 		// Normal mode: show help
 		hint = "  " + m.help.View(m.keys)
@@ -918,6 +995,13 @@ func (m Model) renderTabs() string {
 				boxWidth = 20
 			}
 			queryLine = "\n" + searchBarStyle.Width(boxWidth).Render(queryStyle.Render(query))
+
+			// Show active filter indicator below the query
+			if m.filterText != "" {
+				filterIndicator := lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Render(
+					fmt.Sprintf("  Filter: %s (/ to edit, esc to clear)", m.filterText))
+				queryLine += "\n" + filterIndicator
+			}
 		}
 	}
 
@@ -932,16 +1016,17 @@ func (m Model) openSelectedIssueInBrowser() tea.Cmd {
 		}
 
 		activeSection := m.sections[m.activeSectionIdx]
-		if len(activeSection.issues) == 0 {
+		visible := m.visibleIssues(activeSection)
+		if len(visible) == 0 {
 			return nil
 		}
 
 		cursor := activeSection.table.Cursor()
-		if cursor < 0 || cursor >= len(activeSection.issues) {
+		if cursor < 0 || cursor >= len(visible) {
 			return nil
 		}
 
-		issue := activeSection.issues[cursor]
+		issue := visible[cursor]
 		url := fmt.Sprintf("%s/browse/%s", m.serverURL, issue.Key)
 
 		// Open in browser (cross-platform via jira-cli's browser package)
@@ -964,7 +1049,8 @@ func (m Model) openCreateIssueInBrowser() tea.Cmd {
 }
 
 func (m Model) renderDetailPane(section sectionModel) string {
-	if len(section.issues) == 0 || section.table.Cursor() < 0 || section.table.Cursor() >= len(section.issues) {
+	visibleIssues := m.visibleIssues(section)
+	if len(visibleIssues) == 0 || section.table.Cursor() < 0 || section.table.Cursor() >= len(visibleIssues) {
 		placeholder := "No issue selected"
 		if len(section.issues) == 0 {
 			placeholder = "No issues found"
@@ -972,7 +1058,7 @@ func (m Model) renderDetailPane(section sectionModel) string {
 		return detailStyle.Width(m.width - 4).Render(placeholder)
 	}
 
-	issue := section.issues[section.table.Cursor()]
+	issue := visibleIssues[section.table.Cursor()]
 
 	// If commenting, show the textarea instead of details
 	if m.commenting {
@@ -1127,4 +1213,34 @@ func getIssueFieldValue(issue *jiraClient.EnrichedIssue, field string) string {
 		// Unknown field - return empty
 		return ""
 	}
+}
+
+// visibleIssues returns the currently displayed issues for a section (filtered if a filter is active)
+func (m Model) visibleIssues(section sectionModel) []*jiraClient.EnrichedIssue {
+	if m.filterText == "" {
+		return section.issues
+	}
+	return filterIssues(section.issues, section.layout, m.filterText)
+}
+
+// filterIssues returns issues where any visible column matches the filter text (case-insensitive)
+func filterIssues(issues []*jiraClient.EnrichedIssue, layout []string, filter string) []*jiraClient.EnrichedIssue {
+	if filter == "" {
+		return issues
+	}
+
+	lowerFilter := strings.ToLower(filter)
+	var result []*jiraClient.EnrichedIssue
+
+	for _, issue := range issues {
+		for _, field := range layout {
+			value := strings.ToLower(getIssueFieldValue(issue, field))
+			if strings.Contains(value, lowerFilter) {
+				result = append(result, issue)
+				break
+			}
+		}
+	}
+
+	return result
 }
