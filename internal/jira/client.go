@@ -1,3 +1,4 @@
+// Package jira provides a Jira API client wrapping jira-cli for jdash.
 package jira
 
 import (
@@ -60,7 +61,7 @@ func (c *Client) SearchIssues(jql string, limit uint) ([]*EnrichedIssue, error) 
 	if res == nil {
 		return []*EnrichedIssue{}, nil
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status code: %d", res.StatusCode)

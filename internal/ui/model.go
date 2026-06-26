@@ -1,3 +1,4 @@
+// Package ui implements the Bubbletea TUI model for jdash.
 package ui
 
 import (
@@ -195,6 +196,7 @@ func newKeyMap() keyMap {
 	}
 }
 
+// Model is the root Bubbletea model for jdash, managing sections, navigation, and actions.
 type Model struct {
 	sections            []sectionModel
 	activeSectionIdx    int
@@ -265,6 +267,7 @@ type sprintMoveMsg struct {
 	err      error
 }
 
+// NewModel creates and initializes the TUI model from a Jira client and app config.
 func NewModel(client *jiraClient.Client, appCfg *config.AppConfig) Model {
 	// Create a section for each config section
 	sections := make([]sectionModel, len(appCfg.Jdash.Sections))
@@ -366,7 +369,7 @@ func buildColumnsFromLayout(layout []string) []table.Column {
 	for i, field := range layout {
 		title := columnTitles[field]
 		if title == "" {
-			title = strings.Title(field) // Fallback for unknown fields
+			title = strings.ToUpper(field[:1]) + field[1:] // Fallback for unknown fields
 		}
 		width := columnWidths[field]
 		if width == 0 {
@@ -381,6 +384,7 @@ func buildColumnsFromLayout(layout []string) []table.Column {
 	return columns
 }
 
+// Init implements tea.Model, triggering initial data fetches for non-lazy sections.
 func (m Model) Init() tea.Cmd {
 	// Fetch all sections in parallel, except lazy ones
 	cmds := make([]tea.Cmd, 0, len(m.sections))
@@ -482,6 +486,7 @@ func (m Model) moveToSprint(sprint *jira.Sprint) tea.Cmd {
 	}
 }
 
+// Update implements tea.Model, handling all incoming messages and key events.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -971,6 +976,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// View implements tea.Model, rendering the full TUI to a string.
 func (m Model) View() tea.View {
 	var content string
 
@@ -1000,13 +1006,14 @@ func (m Model) View() tea.View {
 	if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
 		activeSection := m.sections[m.activeSectionIdx]
 
-		if activeSection.err != nil {
+		switch {
+		case activeSection.err != nil:
 			sectionContent := errorStyle.Render(fmt.Sprintf("Error loading section:\n%v", activeSection.err))
 			content = lipgloss.JoinVertical(lipgloss.Left, tabs, sectionContent)
-		} else if activeSection.loading {
+		case activeSection.loading:
 			sectionContent := "Loading issues..."
 			content = lipgloss.JoinVertical(lipgloss.Left, tabs, sectionContent)
-		} else {
+		default:
 			// Render table
 			tableView := tableStyle.Render(activeSection.table.View())
 
@@ -1024,7 +1031,7 @@ func (m Model) View() tea.View {
 			// Add hint at bottom if no issues
 			if len(activeSection.issues) == 0 {
 				hint := "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("No issues found in this section")
-				content = content + hint
+				content += hint
 			}
 		}
 	} else {
@@ -1038,7 +1045,7 @@ func (m Model) View() tea.View {
 }
 
 func (m Model) renderTabs() string {
-	var tabs []string
+	tabs := make([]string, 0, len(m.sections))
 	for i, section := range m.sections {
 		style := tabStyle
 		if i == m.activeSectionIdx {
@@ -1051,7 +1058,8 @@ func (m Model) renderTabs() string {
 	var hint string
 	var queryLine string
 
-	if m.editing {
+	switch {
+	case m.editing:
 		// Editing mode hints
 		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: apply  Esc: cancel")
 		// Show text input in a bordered box
@@ -1060,7 +1068,7 @@ func (m Model) renderTabs() string {
 			boxWidth = 20
 		}
 		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(m.queryInput.View())
-	} else if m.filtering {
+	case m.filtering:
 		// Filtering mode hints
 		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: keep filter  Esc: clear")
 		// Show filter input in a bordered box
@@ -1070,7 +1078,7 @@ func (m Model) renderTabs() string {
 		}
 		filterLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true).Render("/") + " "
 		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(filterLabel + m.filterInput.View())
-	} else {
+	default:
 		// Normal mode: show short help hint inline
 		if !m.help.ShowAll {
 			hint = "  " + m.help.View(m.keys)
@@ -1197,24 +1205,24 @@ func (m Model) renderDetailPane(section sectionModel) string {
 // The title line is NOT included here — callers render it separately.
 func buildDetailContent(issue *jiraClient.EnrichedIssue, wrapWidth int) string {
 	var details strings.Builder
-	details.WriteString(fmt.Sprintf("Type:     %s\n", issue.Fields.IssueType.Name))
-	details.WriteString(fmt.Sprintf("Status:   %s\n", issue.Fields.Status.Name))
+	fmt.Fprintf(&details, "Type:     %s\n", issue.Fields.IssueType.Name)
+	fmt.Fprintf(&details, "Status:   %s\n", issue.Fields.Status.Name)
 
 	assignee := "Unassigned"
 	if issue.Fields.Assignee.Name != "" {
 		assignee = issue.Fields.Assignee.Name
 	}
-	details.WriteString(fmt.Sprintf("Assignee: %s\n", assignee))
+	fmt.Fprintf(&details, "Assignee: %s\n", assignee)
 
 	if len(issue.Fields.Components) > 0 {
 		components := make([]string, len(issue.Fields.Components))
 		for i, c := range issue.Fields.Components {
 			components[i] = c.Name
 		}
-		details.WriteString(fmt.Sprintf("Components: %s\n", strings.Join(components, ", ")))
+		fmt.Fprintf(&details, "Components: %s\n", strings.Join(components, ", "))
 	}
 
-	details.WriteString(fmt.Sprintf("Updated:  %s\n", issue.Fields.Updated))
+	fmt.Fprintf(&details, "Updated:  %s\n", issue.Fields.Updated)
 
 	// Description (if present)
 	if issue.Fields.Description != nil {
@@ -1393,14 +1401,15 @@ func wordWrap(text string, width int) string {
 		}
 		col := 0
 		for wi, word := range words {
-			if wi == 0 {
+			switch {
+			case wi == 0:
 				result.WriteString(word)
 				col = len(word)
-			} else if col+1+len(word) > width {
+			case col+1+len(word) > width:
 				result.WriteString("\n")
 				result.WriteString(word)
 				col = len(word)
-			} else {
+			default:
 				result.WriteString(" ")
 				result.WriteString(word)
 				col += 1 + len(word)
