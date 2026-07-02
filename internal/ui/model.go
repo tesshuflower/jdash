@@ -468,6 +468,20 @@ func (m Model) fetchSprints(issueKey string, boardID int) tea.Cmd {
 			sprints, err = m.client.GetBoardSprints(boardID)
 		}
 
+		// Filter to sprints that originate from the issue's board.
+		// Shared/umbrella boards return sprints from multiple origin boards;
+		// moving an issue to a sprint on a different origin board silently
+		// does nothing in Jira.
+		if err == nil && boardID != 0 {
+			var filtered []*jira.Sprint
+			for _, s := range sprints {
+				if s.BoardID == boardID {
+					filtered = append(filtered, s)
+				}
+			}
+			sprints = filtered
+		}
+
 		return sprintsLoadedMsg{
 			sprints:  sprints,
 			issueKey: issueKey,
