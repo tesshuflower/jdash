@@ -468,6 +468,20 @@ func (m Model) fetchSprints(issueKey string, boardID int) tea.Cmd {
 			sprints, err = m.client.GetBoardSprints(boardID)
 		}
 
+		// Filter to sprints that originate from the issue's board.
+		// Shared/umbrella boards return sprints from multiple origin boards;
+		// moving an issue to a sprint on a different origin board silently
+		// does nothing in Jira.
+		if err == nil && boardID != 0 {
+			var filtered []*jira.Sprint
+			for _, s := range sprints {
+				if s.BoardID == boardID {
+					filtered = append(filtered, s)
+				}
+			}
+			sprints = filtered
+		}
+
 		return sprintsLoadedMsg{
 			sprints:  sprints,
 			issueKey: issueKey,
@@ -905,13 +919,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case commentAddedMsg:
-		// TODO: Show feedback to user (success/error)
-		// For now, just ignore - comment was added in background
+		if msg.err != nil {
+			// Re-open commenting with error visible so user knows the comment failed
+			m.commenting = true
+			m.commentInput.SetValue(fmt.Sprintf("Error: %v", msg.err))
+		}
 		return m, nil
 
 	case transitionsLoadedMsg:
 		if msg.err != nil {
-			// TODO: Show error to user
+			// Show error in transition list (same pattern as sprintsLoadedMsg)
+			delegate := list.NewDefaultDelegate()
+			delegate.ShowDescription = false
+			delegate.SetSpacing(0)
+			detailHeight := (m.height * 4) / 10
+			listHeight := detailHeight - 8
+			if listHeight < 5 {
+				listHeight = 5
+			}
+			m.transitionList = list.New([]list.Item{}, delegate, m.width-8, listHeight)
+			m.transitionList.Title = fmt.Sprintf("Change Status - %s (Error: %v)", msg.issueKey, msg.err)
+			m.transitionList.SetShowHelp(false)
+			m.transitionIssueKey = msg.issueKey
+			m.transitioning = true
 			return m, nil
 		}
 		// Create list items
@@ -942,7 +972,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Re-fetch the active section to refresh the status
 			return m, m.fetchSectionIssues(m.activeSectionIdx)
 		}
-		// TODO: Show error to user
+		// Show error in transition list (same pattern as sprintMoveMsg)
+		m.transitioning = true
+		m.transitionList.Title = fmt.Sprintf("Change Status - %s (Error: %v)", msg.issueKey, msg.err)
 		return m, nil
 
 	case sprintsLoadedMsg:
@@ -965,7 +997,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Re-fetch the active section to refresh the sprint
 			return m, m.fetchSectionIssues(m.activeSectionIdx)
 		}
-		// TODO: Show error to user
+		// Show error in sprint list (reuse existing pattern from sprintsLoadedMsg)
+		m.movingSprint = true
+		m.sprintList.Title = fmt.Sprintf("Move to Sprint - %s (Error: %v)", msg.issueKey, msg.err)
 		return m, nil
 	}
 
