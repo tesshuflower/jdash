@@ -8,11 +8,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DefaultLimit is the number of issues fetched per section when no limit is configured.
+const DefaultLimit uint = 100
+
 // JdashConfig represents jdash's configuration
 type JdashConfig struct {
 	Sections    []SectionConfig `yaml:"sections"`
 	Layout      []string        `yaml:"layout,omitempty"`
 	SprintField string          `yaml:"sprint_field,omitempty"`
+	Limit       uint            `yaml:"limit,omitempty"` // Global default max issues per section (default 100)
 }
 
 // SectionConfig represents a single section configuration
@@ -21,6 +25,19 @@ type SectionConfig struct {
 	Filters string   `yaml:"filters"`
 	Layout  []string `yaml:"layout,omitempty"` // Optional per-section layout override
 	Lazy    bool     `yaml:"lazy,omitempty"`   // If true, don't load this section until user navigates to it
+	Limit   uint     `yaml:"limit,omitempty"`  // Max issues for this section; overrides global limit
+}
+
+// EffectiveLimit returns the limit to use for this section, resolving the
+// precedence: section limit > global limit > DefaultLimit.
+func (s SectionConfig) EffectiveLimit(globalLimit uint) uint {
+	if s.Limit > 0 {
+		return s.Limit
+	}
+	if globalLimit > 0 {
+		return globalLimit
+	}
+	return DefaultLimit
 }
 
 // LoadJdashConfig loads jdash config from ~/.config/jdash/config.yaml
@@ -124,6 +141,8 @@ sections:
     filters: assignee = "%s" AND sprint in openSprints()
     # Optional: per-section layout override
     # layout: [key, summary, status, assignee, sprint]
+    # Optional: per-section issue limit (overrides global limit)
+    # limit: 200
 
   - title: No Sprint / Future Sprint
     filters: assignee = "%s" AND (sprint is EMPTY OR sprint in futureSprints()) AND resolution = Unresolved
@@ -133,14 +152,19 @@ sections:
   #   filters: project = ACM AND type = Bug AND resolution = Unresolved
   #   layout: [key, summary, status, priority, reporter, updated]
 
-  # Example: Team view scoped to component with lazy loading
+  # Example: Team view scoped to component with lazy loading and higher limit
   # - title: Team Sprint (ACM)
   #   filters: sprint in openSprints() AND component = "ACM"
   #   lazy: true  # Don't load until user switches to this section
+  #   limit: 250  # Fetch more issues for busy team sections
 
 # Global column layout (used when section doesn't specify its own)
 # Available fields: key, type, summary, status, assignee, component, sprint, updated, created, priority, reporter, labels, resolution, fixversion, parent
 layout: [key, type, summary, status, assignee, component, sprint, updated]
+
+# Global max issues to fetch per section (default: 100, can be overridden per section)
+# Press 'L' in the TUI to temporarily change the limit for the current session.
+# limit: 100
 
 # Sprint custom field ID (defaults to customfield_10020 if not specified)
 # This is the most common value, but may vary by Jira instance.

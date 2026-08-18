@@ -28,6 +28,13 @@ type EnrichedIssue struct {
 	BoardID     int // Board ID from the issue's sprint (0 if no sprint)
 }
 
+// SearchResult holds the issues returned by a search and pagination metadata from Jira
+type SearchResult struct {
+	Issues []*EnrichedIssue
+	Total  int  // Total number of matching issues (always 0 on Jira Cloud v3)
+	IsLast bool // True when no further pages exist (reliable on all API versions)
+}
+
 // NewClient creates a new Jira client
 func NewClient(cfg *jira.Config, installation, sprintField string) (*Client, error) {
 	client := jira.NewClient(*cfg, jira.WithTimeout(15*time.Second))
@@ -38,75 +45,143 @@ func NewClient(cfg *jira.Config, installation, sprintField string) (*Client, err
 	}, nil
 }
 
-// SearchIssues searches for issues using JQL and returns enriched results with sprint data
-func (c *Client) SearchIssues(jql string, limit uint) ([]*EnrichedIssue, error) {
-	// Build search URL (same as jira-cli's Search() method)
-	var path string
-	var res *http.Response
-	var err error
+// cloudPageSize is the maximum number of issues Jira Cloud returns per request,
+// regardless of the maxResults parameter. Confirmed by probe testing.
+const cloudPageSize = 100
 
+// SearchIssues searches for issues using JQL up to limit results, paginating
+// automatically when the server returns fewer issues than requested.
+//
+// Jira Cloud v3 hard-caps each page at 100 results regardless of maxResults.
+// When limit > 100, this function makes multiple sequential requests using
+// nextPageToken until limit is satisfied or isLast=true.
+//
+// Jira Server v2 uses startAt-based pagination with no known hard cap.
+func (c *Client) SearchIssues(jql string, limit uint) (SearchResult, error) {
 	if c.installation == "Cloud" {
-		// v3 API
-		path = fmt.Sprintf("/search/jql?jql=%s&maxResults=%d&fields=*all", url.QueryEscape(jql), limit)
+		return c.searchIssuesCloud(jql, limit)
+	}
+	return c.searchIssuesServer(jql, limit)
+}
+
+// searchIssuesCloud fetches issues from Jira Cloud (v3 API) with nextPageToken pagination.
+func (c *Client) searchIssuesCloud(jql string, limit uint) (SearchResult, error) {
+	var allEnriched []*EnrichedIssue
+	var lastTotal int
+	nextPageToken := ""
+
+	for {
+		remaining := limit - uint(len(allEnriched))
+		pageSize := uint(cloudPageSize)
+		if remaining < pageSize {
+			pageSize = remaining
+		}
+
+		path := fmt.Sprintf("/search/jql?jql=%s&maxResults=%d&fields=*all", url.QueryEscape(jql), pageSize)
+		if nextPageToken != "" {
+			path += "&nextPageToken=" + url.QueryEscape(nextPageToken)
+		}
+
+		enriched, total, isLast, token, err := c.fetchPage(path, true)
+		if err != nil {
+			return SearchResult{}, err
+		}
+
+		allEnriched = append(allEnriched, enriched...)
+		lastTotal = total
+		nextPageToken = token
+
+		if isLast || uint(len(allEnriched)) >= limit {
+			return SearchResult{Issues: allEnriched, Total: lastTotal, IsLast: isLast}, nil
+		}
+	}
+}
+
+// searchIssuesServer fetches issues from Jira Server (v2 API) with startAt pagination.
+func (c *Client) searchIssuesServer(jql string, limit uint) (SearchResult, error) {
+	var allEnriched []*EnrichedIssue
+	var lastTotal int
+	startAt := 0
+
+	for {
+		remaining := limit - uint(len(allEnriched))
+
+		path := fmt.Sprintf("/search?jql=%s&startAt=%d&maxResults=%d", url.QueryEscape(jql), startAt, remaining)
+
+		enriched, total, isLast, _, err := c.fetchPage(path, false)
+		if err != nil {
+			return SearchResult{}, err
+		}
+
+		allEnriched = append(allEnriched, enriched...)
+		lastTotal = total
+		startAt += len(enriched)
+
+		if isLast || len(enriched) == 0 || uint(len(allEnriched)) >= limit {
+			return SearchResult{Issues: allEnriched, Total: lastTotal, IsLast: isLast}, nil
+		}
+	}
+}
+
+// fetchPage makes a single HTTP search request and returns the parsed page of issues
+// along with pagination metadata. cloud=true uses the v3 API; false uses v2.
+func (c *Client) fetchPage(path string, cloud bool) (enriched []*EnrichedIssue, total int, isLast bool, nextPageToken string, err error) {
+	var res *http.Response
+	if cloud {
 		res, err = c.client.Get(context.Background(), path, nil)
 	} else {
-		// v2 API
-		path = fmt.Sprintf("/search?jql=%s&startAt=%d&maxResults=%d", url.QueryEscape(jql), 0, limit)
 		res, err = c.client.GetV2(context.Background(), path, nil)
 	}
-
 	if err != nil {
-		return nil, fmt.Errorf("failed to search issues: %w", err)
+		return nil, 0, false, "", fmt.Errorf("failed to search issues: %w", err)
 	}
 	if res == nil {
-		return []*EnrichedIssue{}, nil
+		return nil, 0, true, "", nil
 	}
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", res.StatusCode)
+		return nil, 0, false, "", fmt.Errorf("unexpected status code: %d", res.StatusCode)
 	}
 
-	// Read full response body for two-pass decode
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, 0, false, "", fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Pass 1: Decode into standard jira.SearchResult for standard fields
+	// Pass 1: standard fields via jira.SearchResult
 	var standardResult jira.SearchResult
 	if err := json.Unmarshal(body, &standardResult); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal standard fields: %w", err)
+		return nil, 0, false, "", fmt.Errorf("failed to unmarshal standard fields: %w", err)
 	}
 
-	// Pass 2: Extract sprint data from custom field
+	// Pass 2: pagination metadata + sprint custom fields
 	var rawResult struct {
-		Issues []struct {
-			Key    string                            `json:"key"`
+		Total         int    `json:"total"`
+		IsLast        bool   `json:"isLast"`
+		NextPageToken string `json:"nextPageToken"`
+		Issues        []struct {
+			Key    string                     `json:"key"`
 			Fields map[string]json.RawMessage `json:"fields"`
 		} `json:"issues"`
 	}
 	if err := json.Unmarshal(body, &rawResult); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal raw fields: %w", err)
+		return nil, 0, false, "", fmt.Errorf("failed to unmarshal raw fields: %w", err)
 	}
 
-	// Build enriched results
-	enriched := make([]*EnrichedIssue, len(standardResult.Issues))
+	enriched = make([]*EnrichedIssue, len(standardResult.Issues))
 	for i, issue := range standardResult.Issues {
 		enrichedIssue := &EnrichedIssue{Issue: issue}
 
-		// Extract sprint data from custom field if present
 		if i < len(rawResult.Issues) && c.sprintField != "" {
 			if sprintRaw, ok := rawResult.Issues[i].Fields[c.sprintField]; ok {
-				// Parse sprint manually to get boardId (custom field uses "boardId", not "originBoardId")
 				var rawSprints []struct {
 					ID      int    `json:"id"`
 					Name    string `json:"name"`
 					State   string `json:"state"`
-					BoardID int    `json:"boardId"` // Note: custom field uses "boardId", not "originBoardId"
+					BoardID int    `json:"boardId"`
 				}
 				if err := json.Unmarshal(sprintRaw, &rawSprints); err == nil && len(rawSprints) > 0 {
-					// Use the last sprint (most recent/active)
 					lastSprint := rawSprints[len(rawSprints)-1]
 					enrichedIssue.SprintName = lastSprint.Name
 					enrichedIssue.SprintState = lastSprint.State
@@ -118,7 +193,7 @@ func (c *Client) SearchIssues(jql string, limit uint) ([]*EnrichedIssue, error) 
 		enriched[i] = enrichedIssue
 	}
 
-	return enriched, nil
+	return enriched, rawResult.Total, rawResult.IsLast, rawResult.NextPageToken, nil
 }
 
 // AddComment adds a comment to an issue

@@ -105,6 +105,7 @@ type keyMap struct {
 	// Other
 	Filter      key.Binding
 	EditQuery   key.Binding
+	SetLimit    key.Binding
 	Refresh     key.Binding
 	RefreshAll  key.Binding
 	Help        key.Binding
@@ -119,7 +120,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.SwitchSectionNext, k.SwitchSectionPrev, k.Navigate, k.FirstItem, k.LastItem, k.EnterDetail},
 		{k.Comment, k.ChangeStatus, k.MoveToSprint, k.OpenBrowser, k.CreateIssue},
-		{k.Filter, k.EditQuery, k.Refresh, k.RefreshAll, k.Help, k.Quit},
+		{k.Filter, k.EditQuery, k.SetLimit, k.Refresh, k.RefreshAll, k.Help, k.Quit},
 	}
 }
 
@@ -177,6 +178,10 @@ func newKeyMap() keyMap {
 			key.WithKeys("e"),
 			key.WithHelp("e", "edit query"),
 		),
+		SetLimit: key.NewBinding(
+			key.WithKeys("L"),
+			key.WithHelp("L", "set limit"),
+		),
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),
@@ -203,6 +208,7 @@ type Model struct {
 	client              *jiraClient.Client
 	serverURL           string
 	projectKey          string
+	globalLimit         uint // Global default issue fetch limit from config
 	width               int
 	height              int
 	editing             bool
@@ -210,6 +216,8 @@ type Model struct {
 	filtering           bool
 	filterInput         textinput.Model
 	filterText          string
+	settingLimit        bool
+	limitInput          textinput.Model
 	commenting          bool
 	commentInput        textarea.Model
 	transitioning       bool
@@ -225,18 +233,23 @@ type Model struct {
 }
 
 type sectionModel struct {
-	config  config.SectionConfig
-	table   table.Model
-	issues  []*jiraClient.EnrichedIssue
-	loading bool
-	loaded  bool     // Has this section been loaded at least once?
-	err     error
-	layout  []string // Column layout for this section
+	config       config.SectionConfig
+	table        table.Model
+	issues       []*jiraClient.EnrichedIssue
+	totalIssues  int  // Total matching issues in Jira (0 on Cloud v3)
+	isLast       bool // True when no further pages exist (authoritative truncation signal)
+	sessionLimit uint // Runtime limit override (0 = use config-derived limit)
+	loading      bool
+	loaded       bool     // Has this section been loaded at least once?
+	err          error
+	layout       []string // Column layout for this section
 }
 
 type sectionIssuesLoadedMsg struct {
 	sectionIdx int
 	issues     []*jiraClient.EnrichedIssue
+	total      int  // Total matching issues reported by Jira API (0 on Cloud v3)
+	isLast     bool // True when no further pages exist
 	err        error
 }
 
@@ -281,14 +294,21 @@ func NewModel(client *jiraClient.Client, appCfg *config.AppConfig) Model {
 	}
 
 	keys := newKeyMap()
+
+	limitIn := textinput.New()
+	limitIn.Placeholder = "e.g. 250"
+	limitIn.CharLimit = 6
+
 	m := Model{
 		sections:         sections,
 		activeSectionIdx: 0,
 		client:           client,
 		serverURL:        appCfg.JiraCfg.Server,
 		projectKey:       appCfg.ProjectKey,
+		globalLimit:      appCfg.Jdash.Limit,
 		help:             help.New(),
 		keys:             keys,
+		limitInput:       limitIn,
 	}
 
 	return m
@@ -399,10 +419,17 @@ func (m Model) Init() tea.Cmd {
 func (m Model) fetchSectionIssues(sectionIdx int) tea.Cmd {
 	return func() tea.Msg {
 		section := m.sections[sectionIdx]
-		issues, err := m.client.SearchIssues(section.config.Filters, 100)
+		// Resolve effective limit: session override > section config > global config > default
+		limit := section.sessionLimit
+		if limit == 0 {
+			limit = section.config.EffectiveLimit(m.globalLimit)
+		}
+		result, err := m.client.SearchIssues(section.config.Filters, limit)
 		return sectionIssuesLoadedMsg{
 			sectionIdx: sectionIdx,
-			issues:     issues,
+			issues:     result.Issues,
+			total:      result.Total,
+			isLast:     result.IsLast,
 			err:        err,
 		}
 	}
@@ -616,6 +643,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Handle limit-setting mode keys
+		if m.settingLimit {
+			switch msg.String() {
+			case "enter":
+				// Parse and apply the new limit
+				val := m.limitInput.Value()
+				var newLimit uint
+				if _, err := fmt.Sscanf(val, "%d", &newLimit); err == nil && newLimit > 0 {
+					m.sections[m.activeSectionIdx].sessionLimit = newLimit
+					m.sections[m.activeSectionIdx].loading = true
+					m.settingLimit = false
+					return m, m.fetchSectionIssues(m.activeSectionIdx)
+				}
+				// Invalid input — just cancel
+				m.settingLimit = false
+				return m, nil
+
+			case "esc":
+				// Cancel — leave limit unchanged
+				m.settingLimit = false
+				return m, nil
+
+			default:
+				m.limitInput, cmd = m.limitInput.Update(msg)
+				return m, cmd
+			}
+		}
+
 		// Handle commenting mode keys
 		if m.commenting {
 			switch msg.String() {
@@ -753,6 +808,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.queryInput.SetValue(m.sections[m.activeSectionIdx].config.Filters)
 				m.queryInput.Focus()
 				m.queryInput.SetWidth(m.width - 4)
+			}
+			return m, nil
+
+		case "L":
+			// Enter limit-setting mode for current section (session-only)
+			if m.activeSectionIdx >= 0 && m.activeSectionIdx < len(m.sections) {
+				m.settingLimit = true
+				section := m.sections[m.activeSectionIdx]
+				// Pre-fill with the current effective limit
+				currentLimit := section.sessionLimit
+				if currentLimit == 0 {
+					currentLimit = section.config.EffectiveLimit(m.globalLimit)
+				}
+				m.limitInput = textinput.New()
+				m.limitInput.SetValue(fmt.Sprintf("%d", currentLimit))
+				m.limitInput.Placeholder = "e.g. 250"
+				m.limitInput.CharLimit = 6
+				m.limitInput.Focus()
+				m.limitInput.SetWidth(m.width - 10)
 			}
 			return m, nil
 
@@ -912,6 +986,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sections[msg.sectionIdx].err = msg.err
 			} else {
 				m.sections[msg.sectionIdx].issues = msg.issues
+				m.sections[msg.sectionIdx].totalIssues = msg.total
+				m.sections[msg.sectionIdx].isLast = msg.isLast
 				// Build rows using section's layout
 				m.sections[msg.sectionIdx].table.SetRows(issuesToRows(msg.issues, m.sections[msg.sectionIdx].layout))
 			}
@@ -1068,14 +1144,18 @@ func (m Model) View() tea.View {
 			// Render table
 			tableView := tableStyle.Render(activeSection.table.View())
 
+			// Render issue count line between table and detail pane
+			countLine := m.renderIssueCount(activeSection)
+
 			// Render detail pane
 			detailView := m.renderDetailPane(activeSection)
 
-			// Stack: tabs + table + detail
+			// Stack: tabs + table + count + detail
 			content = lipgloss.JoinVertical(
 				lipgloss.Left,
 				tabs,
 				tableView,
+				countLine,
 				detailView,
 			)
 
@@ -1129,6 +1209,16 @@ func (m Model) renderTabs() string {
 		}
 		filterLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true).Render("/") + " "
 		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(filterLabel + m.filterInput.View())
+	case m.settingLimit:
+		// Limit-setting mode hints
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: apply  Esc: cancel")
+		// Show limit input in a bordered box with a label
+		boxWidth := m.width - 6
+		if boxWidth < 20 {
+			boxWidth = 20
+		}
+		limitLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render("L") + " "
+		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(limitLabel + m.limitInput.View())
 	default:
 		// Normal mode: show short help hint inline
 		if !m.help.ShowAll {
@@ -1168,6 +1258,38 @@ func (m Model) renderTabs() string {
 	}
 
 	return tabBar + hint + queryLine + helpLine + "\n"
+}
+
+// renderIssueCount renders a subtle status line showing how many issues are loaded vs total.
+// When all issues fit, shows a dim count. When results are truncated, shows a highlighted
+// warning so it's obvious not all issues are displayed.
+//
+// isLast is the authoritative truncation signal on all API versions. Jira Cloud v3 hard-caps
+// at 100 results regardless of maxResults, and does not return total or maxResults in the
+// response — isLast=false is the only reliable way to know there are more results.
+func (m Model) renderIssueCount(section sectionModel) string {
+	fetched := len(section.issues)
+
+	// Don't show anything while loading or on error, or if no issues at all
+	if section.loading || section.err != nil || fetched == 0 {
+		return ""
+	}
+
+	truncatedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	// isLast=false means the API has more pages — results are truncated
+	if !section.isLast {
+		if section.totalIssues > 0 {
+			// v2 API: we have an exact total
+			return truncatedStyle.Render(fmt.Sprintf("  Showing %d of %d issues  (press L to change limit)", fetched, section.totalIssues))
+		}
+		// Cloud v3: no total available, but we know there's more
+		return truncatedStyle.Render(fmt.Sprintf("  Showing %d+ issues  (press L to change limit)", fetched))
+	}
+
+	// isLast=true — all matching issues are shown
+	return normalStyle.Render(fmt.Sprintf("  %d issues", fetched))
 }
 
 // openSelectedIssueInBrowser opens the currently selected issue in the default browser
