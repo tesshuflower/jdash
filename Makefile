@@ -1,7 +1,7 @@
 BINARY_NAME := jdash
 
 # renovate: datasource=github-releases depName=golangci/golangci-lint
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= 2.13.2
 GOLANGCI_LINT := ./bin/golangci-lint
 
 .PHONY: build test lint run clean
