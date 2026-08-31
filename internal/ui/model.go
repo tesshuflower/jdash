@@ -43,15 +43,15 @@ var (
 			Foreground(lipgloss.Color("250"))
 
 	activeTabStyle = lipgloss.NewStyle().
-				Padding(0, 2).
-				Foreground(lipgloss.Color("229")).
-				Background(lipgloss.Color("57")).
-				Bold(true)
+			Padding(0, 2).
+			Foreground(lipgloss.Color("229")).
+			Background(lipgloss.Color("57")).
+			Bold(true)
 
 	searchBarStyle = lipgloss.NewStyle().
-				BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("63")).
-				Padding(0, 1)
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("63")).
+			Padding(0, 1)
 
 	searchBarEditingStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.RoundedBorder()).
@@ -96,20 +96,20 @@ type keyMap struct {
 	EnterDetail       key.Binding
 
 	// Actions
-	Comment       key.Binding
-	ChangeStatus  key.Binding
-	MoveToSprint  key.Binding
-	OpenBrowser   key.Binding
-	CreateIssue   key.Binding
+	Comment      key.Binding
+	ChangeStatus key.Binding
+	MoveToSprint key.Binding
+	OpenBrowser  key.Binding
+	CreateIssue  key.Binding
 
 	// Other
-	Filter      key.Binding
-	EditQuery   key.Binding
-	SetLimit    key.Binding
-	Refresh     key.Binding
-	RefreshAll  key.Binding
-	Help        key.Binding
-	Quit        key.Binding
+	Filter     key.Binding
+	EditQuery  key.Binding
+	SetLimit   key.Binding
+	Refresh    key.Binding
+	RefreshAll key.Binding
+	Help       key.Binding
+	Quit       key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
@@ -203,33 +203,33 @@ func newKeyMap() keyMap {
 
 // Model is the root Bubbletea model for jdash, managing sections, navigation, and actions.
 type Model struct {
-	sections            []sectionModel
-	activeSectionIdx    int
-	client              *jiraClient.Client
-	serverURL           string
-	projectKey          string
-	globalLimit         uint // Global default issue fetch limit from config
-	width               int
-	height              int
-	editing             bool
-	queryInput          textinput.Model
-	filtering           bool
-	filterInput         textinput.Model
-	filterText          string
-	settingLimit        bool
-	limitInput          textinput.Model
-	commenting          bool
-	commentInput        textarea.Model
-	transitioning       bool
-	transitionList      list.Model
-	transitionIssueKey  string
-	movingSprint        bool
-	sprintList          list.Model
-	sprintIssueKey      string
-	help                help.Model
-	keys                keyMap
-	focusDetail         bool
-	detailViewport      viewport.Model
+	sections           []sectionModel
+	activeSectionIdx   int
+	client             *jiraClient.Client
+	serverURL          string
+	projectKey         string
+	globalLimit        uint // Global default issue fetch limit from config
+	width              int
+	height             int
+	editing            bool
+	queryInput         textinput.Model
+	filtering          bool
+	filterInput        textinput.Model
+	filterText         string
+	settingLimit       bool
+	limitInput         textinput.Model
+	commenting         bool
+	commentInput       textarea.Model
+	transitioning      bool
+	transitionList     list.Model
+	transitionIssueKey string
+	movingSprint       bool
+	sprintList         list.Model
+	sprintIssueKey     string
+	help               help.Model
+	keys               keyMap
+	focusDetail        bool
+	detailViewport     viewport.Model
 }
 
 type sectionModel struct {
@@ -240,7 +240,7 @@ type sectionModel struct {
 	isLast       bool // True when no further pages exist (authoritative truncation signal)
 	sessionLimit uint // Runtime limit override (0 = use config-derived limit)
 	loading      bool
-	loaded       bool     // Has this section been loaded at least once?
+	loaded       bool // Has this section been loaded at least once?
 	err          error
 	layout       []string // Column layout for this section
 }
@@ -270,9 +270,9 @@ type transitionDoneMsg struct {
 }
 
 type sprintsLoadedMsg struct {
-	sprints    []*jira.Sprint
-	issueKey   string
-	err        error
+	sprints  []*jira.Sprint
+	issueKey string
+	err      error
 }
 
 type sprintMoveMsg struct {
@@ -359,6 +359,7 @@ func buildColumnsFromLayout(layout []string) []table.Column {
 		"updated":    12,
 		"created":    12,
 		"priority":   10,
+		"severity":   10,
 		"reporter":   20,
 		"labels":     20,
 		"resolution": 15,
@@ -378,6 +379,7 @@ func buildColumnsFromLayout(layout []string) []table.Column {
 		"updated":    "Updated",
 		"created":    "Created",
 		"priority":   "Priority",
+		"severity":   "Severity",
 		"reporter":   "Reporter",
 		"labels":     "Labels",
 		"resolution": "Resolution",
@@ -1208,7 +1210,7 @@ func (m Model) renderTabs() string {
 			boxWidth = 20
 		}
 		filterLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true).Render("/") + " "
-		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(filterLabel + m.filterInput.View())
+		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(filterLabel+m.filterInput.View())
 	case m.settingLimit:
 		// Limit-setting mode hints
 		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Enter: apply  Esc: cancel")
@@ -1218,7 +1220,7 @@ func (m Model) renderTabs() string {
 			boxWidth = 20
 		}
 		limitLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render("L") + " "
-		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(limitLabel + m.limitInput.View())
+		queryLine = "\n" + searchBarEditingStyle.Width(boxWidth).Render(limitLabel+m.limitInput.View())
 	default:
 		// Normal mode: show short help hint inline
 		if !m.help.ShowAll {
@@ -1472,6 +1474,9 @@ func getIssueFieldValue(issue *jiraClient.EnrichedIssue, field string) string {
 
 	case "priority":
 		return issue.Fields.Priority.Name
+
+	case "severity":
+		return issue.Severity
 
 	case "reporter":
 		return issue.Fields.Reporter.Name

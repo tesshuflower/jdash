@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ankitpokhrel/jira-cli/pkg/jira"
@@ -15,9 +16,10 @@ import (
 
 // Client wraps the jira-cli client with our interface
 type Client struct {
-	client       *jira.Client
-	installation string // "Cloud" or "Local"
-	sprintField  string // Custom field ID for sprint (e.g., "customfield_10020")
+	client        *jira.Client
+	installation  string // "Cloud" or "Local"
+	sprintField   string // Custom field ID for sprint (e.g., "customfield_10020")
+	severityField string // Severity field key/ID (e.g., "severity" or "customfield_12345")
 }
 
 // EnrichedIssue wraps jira.Issue with additional parsed data
@@ -25,7 +27,8 @@ type EnrichedIssue struct {
 	*jira.Issue
 	SprintName  string
 	SprintState string
-	BoardID     int // Board ID from the issue's sprint (0 if no sprint)
+	BoardID     int    // Board ID from the issue's sprint (0 if no sprint)
+	Severity    string // Parsed severity value (from configured severity field)
 }
 
 // SearchResult holds the issues returned by a search and pagination metadata from Jira
@@ -36,12 +39,13 @@ type SearchResult struct {
 }
 
 // NewClient creates a new Jira client
-func NewClient(cfg *jira.Config, installation, sprintField string) (*Client, error) {
+func NewClient(cfg *jira.Config, installation, sprintField, severityField string) (*Client, error) {
 	client := jira.NewClient(*cfg, jira.WithTimeout(15*time.Second))
 	return &Client{
-		client:       client,
-		installation: installation,
-		sprintField:  sprintField,
+		client:        client,
+		installation:  installation,
+		sprintField:   sprintField,
+		severityField: severityField,
 	}, nil
 }
 
@@ -173,19 +177,27 @@ func (c *Client) fetchPage(path string, cloud bool) (enriched []*EnrichedIssue, 
 	for i, issue := range standardResult.Issues {
 		enrichedIssue := &EnrichedIssue{Issue: issue}
 
-		if i < len(rawResult.Issues) && c.sprintField != "" {
-			if sprintRaw, ok := rawResult.Issues[i].Fields[c.sprintField]; ok {
-				var rawSprints []struct {
-					ID      int    `json:"id"`
-					Name    string `json:"name"`
-					State   string `json:"state"`
-					BoardID int    `json:"boardId"`
+		if i < len(rawResult.Issues) {
+			if c.sprintField != "" {
+				if sprintRaw, ok := rawResult.Issues[i].Fields[c.sprintField]; ok {
+					var rawSprints []struct {
+						ID      int    `json:"id"`
+						Name    string `json:"name"`
+						State   string `json:"state"`
+						BoardID int    `json:"boardId"`
+					}
+					if err := json.Unmarshal(sprintRaw, &rawSprints); err == nil && len(rawSprints) > 0 {
+						lastSprint := rawSprints[len(rawSprints)-1]
+						enrichedIssue.SprintName = lastSprint.Name
+						enrichedIssue.SprintState = lastSprint.State
+						enrichedIssue.BoardID = lastSprint.BoardID
+					}
 				}
-				if err := json.Unmarshal(sprintRaw, &rawSprints); err == nil && len(rawSprints) > 0 {
-					lastSprint := rawSprints[len(rawSprints)-1]
-					enrichedIssue.SprintName = lastSprint.Name
-					enrichedIssue.SprintState = lastSprint.State
-					enrichedIssue.BoardID = lastSprint.BoardID
+			}
+
+			if c.severityField != "" {
+				if severityRaw, ok := rawResult.Issues[i].Fields[c.severityField]; ok {
+					enrichedIssue.Severity = parseDisplayFieldValue(severityRaw)
 				}
 			}
 		}
@@ -194,6 +206,41 @@ func (c *Client) fetchPage(path string, cloud bool) (enriched []*EnrichedIssue, 
 	}
 
 	return enriched, rawResult.Total, rawResult.IsLast, rawResult.NextPageToken, nil
+}
+
+// parseDisplayFieldValue extracts a user-friendly string from common Jira field shapes.
+func parseDisplayFieldValue(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var plain string
+	if err := json.Unmarshal(raw, &plain); err == nil {
+		return plain
+	}
+
+	var obj map[string]interface{}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		for _, key := range []string{"name", "value", "displayName"} {
+			if v, ok := obj[key].(string); ok {
+				return v
+			}
+		}
+	}
+
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		parts := make([]string, 0, len(arr))
+		for _, item := range arr {
+			value := parseDisplayFieldValue(item)
+			if value != "" {
+				parts = append(parts, value)
+			}
+		}
+		return strings.Join(parts, ",")
+	}
+
+	return ""
 }
 
 // AddComment adds a comment to an issue

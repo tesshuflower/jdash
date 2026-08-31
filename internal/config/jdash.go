@@ -13,10 +13,11 @@ const DefaultLimit uint = 100
 
 // JdashConfig represents jdash's configuration
 type JdashConfig struct {
-	Sections    []SectionConfig `yaml:"sections"`
-	Layout      []string        `yaml:"layout,omitempty"`
-	SprintField string          `yaml:"sprint_field,omitempty"`
-	Limit       uint            `yaml:"limit,omitempty"` // Global default max issues per section (default 100)
+	Sections      []SectionConfig `yaml:"sections"`
+	Layout        []string        `yaml:"layout,omitempty"`
+	SprintField   string          `yaml:"sprint_field,omitempty"`
+	SeverityField string          `yaml:"severity_field,omitempty"`
+	Limit         uint            `yaml:"limit,omitempty"` // Global default max issues per section (default 100)
 }
 
 // SectionConfig represents a single section configuration
@@ -117,15 +118,16 @@ func getDefaultConfig(login string) JdashConfig {
 	}
 
 	return JdashConfig{
-		Sections:    sections,
-		Layout:      getDefaultLayout(),
-		SprintField: "customfield_10020", // Common default, but may vary by Jira instance
+		Sections:      sections,
+		Layout:        getDefaultLayout(),
+		SprintField:   "customfield_10020", // Common default, but may vary by Jira instance
+		SeverityField: "customfield_10840", // Example default (ACM): Severity custom field; may vary by Jira instance
 	}
 }
 
 // getDefaultLayout returns the default column layout
 func getDefaultLayout() []string {
-	return []string{"key", "type", "summary", "status", "assignee", "component", "sprint", "updated"}
+	return []string{"key", "type", "summary", "status", "priority", "severity", "assignee", "component", "sprint", "updated"}
 }
 
 // writeDefaultConfig writes a default config file with the user's login substituted
@@ -159,8 +161,8 @@ sections:
   #   limit: 250  # Fetch more issues for busy team sections
 
 # Global column layout (used when section doesn't specify its own)
-# Available fields: key, type, summary, status, assignee, component, sprint, updated, created, priority, reporter, labels, resolution, fixversion, parent
-layout: [key, type, summary, status, assignee, component, sprint, updated]
+# Available fields: key, type, summary, status, assignee, component, sprint, updated, created, priority, severity, reporter, labels, resolution, fixversion, parent
+layout: [key, type, summary, status, priority, severity, assignee, component, sprint, updated]
 
 # Global max issues to fetch per section (default: 100, can be overridden per section)
 # Press 'L' in the TUI to temporarily change the limit for the current session.
@@ -170,6 +172,11 @@ layout: [key, type, summary, status, assignee, component, sprint, updated]
 # This is the most common value, but may vary by Jira instance.
 # To find your sprint field ID, run: curl -u "user:token" "https://your-jira/rest/api/3/field" | grep -i sprint
 sprint_field: customfield_10020
+
+# Severity custom field ID (example default: customfield_10840)
+# This may vary by Jira instance.
+# To find yours, run: jira issue view ISSUE-KEY --raw and locate the Severity field key.
+severity_field: customfield_10840
 `
 
 	// Substitute login email

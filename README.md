@@ -96,13 +96,16 @@ sections:
     lazy: true  # Don't load until first visit
 
 # Global layout (used when section doesn't specify its own)
-layout: [key, type, summary, status, assignee, component, sprint, updated]
+layout: [key, type, summary, status, priority, severity, assignee, component, sprint, updated]
 
 # Sprint field ID (defaults to customfield_10020)
 sprint_field: customfield_10020
+
+# Severity custom field ID (example: customfield_10840)
+severity_field: customfield_10840
 ```
 
-**Available layout fields:** key, type, summary, status, assignee, component, sprint, updated, created, priority, reporter, labels, resolution, fixversion, parent
+**Available layout fields:** key, type, summary, status, assignee, component, sprint, updated, created, priority, severity, reporter, labels, resolution, fixversion, parent
 
 ## Keybindings
 
