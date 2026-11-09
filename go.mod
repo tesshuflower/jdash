@@ -1,11 +1,11 @@
 module github.com/tesshuflower/jdash
 
-go 1.25.0
+go 1.26.7
 
 require (
 	charm.land/bubbles/v2 v2.1.1
 	charm.land/bubbletea/v2 v2.0.8
-	charm.land/lipgloss/v2 v2.0.6
+	charm.land/lipgloss/v2 v2.1.0
 	github.com/ankitpokhrel/jira-cli v1.7.0
 	gopkg.in/yaml.v3 v3.0.1
 )
